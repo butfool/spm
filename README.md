@@ -18,9 +18,8 @@ $ spm i
 There is no database. The state is the manifest plus the symlinks on disk, so
 `git diff` shows exactly what a teammate will get.
 
-📄 [`docs/PROMPT.md`](docs/PROMPT.md) — the original brief and the decisions
-that shaped it. 📐 [`docs/SPEC.md`](docs/SPEC.md) — the behavioural spec. Together
-they're enough to rebuild this project from scratch.
+📄 [`docs/PROMPT.md`](docs/PROMPT.md) is the complete brief this project was built
+from — hand it to an AI and it will produce an equivalent tool.
 
 ## Install
 

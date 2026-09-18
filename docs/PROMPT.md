@@ -1,127 +1,474 @@
-# 原始提示词与拍板记录
+# 实现 spm：面向 AI Coding Agent 的声明式 SKILL 管理器
 
-> 这份文档是 `spm` 的**需求源头**。把它整份交给一个 AI agent，它应当能产出一个行为等价的 `spm`。
-> 实现规格见 [`SPEC.md`](./SPEC.md)；本文只记录"当初是怎么提的、怎么定的"。
+你要在 `~/Code/ButCool/spm` 从零实现一个命令行工具 `spm`，用 TypeScript + Node 编写。
+
+它管理 AI coding agent（Claude Code、Cursor、Codex 等）读取的 `SKILL.md` 文件，做成
+**声明式依赖管理**：用户在 `skills.yaml` 里声明要哪些 skill，`spm install` 让文件系统
+收敛到那个状态——幂等、可重复运行。
+
+心智模型是 npm，但**去掉了版本求解**：SKILL.md 之间不存在依赖关系，所以清单是平的。
+
+读完本文即可开工。文末附完整验收标准。
 
 ---
 
-## 一、最初的提示词（逐字）
+## 1. 两种 source
+
+都要支持，并且都能**由清单自动注册**（见 § 7.3）。
+
+### local
+
+注册 = 在 `~/.config/spm/sources/<alias>` 建一个指向源目录的**软链接**。
 
 ```
-/Users/butcool/Code/ButCool/spm
-我想要让你帮我做一个类似 npm/maven 的 SKILL 管理工具.
-
-现在这个 SKills 工具不好用.
-
-我希望做成声明式的依赖管理工具
-
-并且类似 maven 有全局配置和本地仓库路径(~/.config/spm/settings.yaml)
-
-local/github 两种类型的仓库都支持
-
-但是本地的也是要注册一下才能知道这个 source 的路径的 (通过软连接进行 register 的动作)
-
-同时支持 install 单个和一整个 source 两种方式.
-
-命令行操作类似于 npm,比如 install/i 等等各种命令集合
+spm source add ./path/to/my-skills
+  →  ln -s /abs/path/to/my-skills  ~/.config/spm/sources/my-skills
 ```
 
-**背景**：`~/Code/ButCool/skills` 是一个已有的 Go + SQLite 实现，管的是同一批 `SKILL.md`。
-新项目不是它的重构，是**另起炉灶**，只在领域细节上参考它（见 [`SPEC.md` § 8](./SPEC.md)）。
+**源目录本身一个字节都不改。** 这是"注册"而非"拷贝"的全部意义：源仓库怎么改，
+装出去的 skill 立刻跟着变。
+
+### github
+
+```
+git clone --depth 1 --branch <ref> --single-branch \
+  https://github.com/<owner>/<repo>.git <tmp>
+```
+
+必须**先 clone 到临时目录，读到仓库自己声明的名字后再改名到位**，否则拿不到仓库
+在 `skill-repository.yaml` 里写的 `name`。失败要清理临时目录。
+
+支持用 `ref` 钉住 tag 或 branch（仅为可复现，不参与任何求解）。
+
+git 操作直接 `child_process.execFile` 调系统 git。不要引 git 库——顺带继承了用户的
+凭据配置，私有仓库才能用。
 
 ---
 
-## 二、追问与拍板（逐字）
+## 2. 三个配置文件
 
-原始提示词留了几处关键歧义，以下是逐轮澄清的原话。**这些回答和提示词本身同等重要**——没有它们，实现会走向完全不同的方向。
-
-### 第 1 轮
-
-| 问题 | 回答 |
-| --- | --- |
-| spm 和现有 skills 工具的关系？ | **全新 nodejs 项目!** |
-| "声明式依赖管理"具体到哪一层？ | **清单,但是不提供版本的概念!配置文件名字叫 skills.yaml 吧** |
-| 本地和 github source 的"版本/引用"怎么定义？ | **路径 / git tag+commit（推荐）** |
-
-### 第 2 轮
-
-| 问题 | 回答 |
-| --- | --- |
-| Node 项目具体用什么？ | **TypeScript + Node（推荐）** |
-| 本地 source 的 "register（软链接）" 具体怎么做？ | **软链接到 spm 仓库目录（推荐）** |
-| skills.yaml 放哪里、装到哪里？ | **全局的话, 应该是在 `~/.config/spm/skills.yaml` 中才对! 另外, 项目自行指定 SKILL 的安装目录, 比如 `./claude/skills` 或者 `./.agents/skills` 默认就是后者** |
-
-### 计划评审阶段的两条否决
-
-1. **安装目标必须是数组**
-
-   > `installDir` 应该是一个数组列表!
-
-2. **仓库自描述文件要极简，不要 ID 体系**
-
-   > alias 冲突的问题可以参考本项目的处理, 本地目录中都有一个 `/Users/butcool/Code/ButCool/skills/skills/skill-repository.yaml` 类似这种的文件来定义都支持哪些 SKILL; 这样可以解决路径移动的问题.
-   >
-   > **注意不要再用 复杂的 hash-id 了, 这个文件仅仅为了解决仓库名称的问题, 以及 ignore 之类的可见范围, 不解决 skill 名称变动之类的问题! 那种要交给他自己维护!**
-
-### 实现过程中确认的两点
-
-1. **全局清单机制保留（不学 npm）**
-
-   > 没事的, 我们这一点可以不学习 npm (我是说 `npm i -g` 应该仅仅安装吧, 没有清单机制, 但是我觉得我们的 spm 如果有这个机制还挺好的)
-
-2. **整源安装的写法**
-
-   > 看你的语法, 如果安装某一个 Source 的全部 SKILL, 写法是怎么样的啊?
-
-   → 原实现只有 `alias/*`，实测发现 `*` 会被 shell 抢先展开（zsh 默认 `nomatch` 直接报
-   `no matches found`；当前目录若有同名文件夹则静默展开成该目录内容）。
-   因此新增**裸别名**形式：`spm add mine`。详见 [`SPEC.md` § 5](./SPEC.md)。
-
----
-
-## 三、必须避开的东西
-
-上面第 2 条否决点是最容易做错的。总结成一句：
-
-> **不要为了"追踪身份"引入任何形式的稳定 ID。**
-
-现有 `skills` 工具的 `skill-repository.yaml` 长这样：
+### 2.1 `~/.config/spm/settings.yaml`（全局默认值）
 
 ```yaml
-# ❌ 不要这样做
-id: 7f89021c-13d7-4f70-8c26-ae983922324e        # 仓库 UUID
-name: skills
+installDirs:
+  - .agents/skills
+  - .claude/skills
+sourcesDir: sources      # 相对 SPM_HOME
+defaultRef: main         # github 源的默认分支
+```
+
+三项都要有默认值，文件可以不存在。但**解析失败必须报错，不要静默回落**——静默回落会让
+用户以为配置生效了。
+
+`SPM_HOME` 环境变量可整体改道（测试要用），默认 `$XDG_CONFIG_HOME/spm` 或 `~/.config/spm`。
+
+### 2.2 `skills.yaml`（清单，项目级与全局级同一套 schema）
+
+- 项目级：`<项目根>/skills.yaml`
+- 全局级：`~/.config/spm/skills.yaml`
+
+```yaml
+installDirs:            # 可省略；省略则继承 settings，再省略则 [".agents/skills"]
+  - .agents/skills
+  - .claude/skills
+
+sources:                # 让清单自描述，新机器能自举
+  mine:
+    path: ~/Code/my-skills
+  upstream:
+    repo: anthropics/skills
+    ref: main
+
 skills:
-    obsidian-workflow-import-files:
-        id: 9e717835-2d98-4cfc-929c-d36899ec8d8b  # 每个 skill 一个 UUID
-    skills-dev:
-        id: e5796ec3-17eb-499a-9108-25ed3deb7a0a
+  - mine                # 整源
+  - upstream/pdf        # 单个
 ```
 
-`spm` 只要这一半：
+规则：
+
+- 每个 source **恰好**有 `path` 或 `repo` 之一。都有、或都没有，都是错误。
+- `ref` 只对 github 有意义。
+- **不含任何版本字段。** 不要设计 version / range / semver。
+- `skills` 条目可以是字符串，也可以是对象 `{path|repo, ref?, skill?}`（供手写清单使用）。
+
+### 2.3 `skill-repository.yaml`（source 自描述，可选）
+
+放在 source 根目录。因为它在仓库里、跟着仓库走，所以仓库整体挪位置不影响注册。
 
 ```yaml
-# ✅ 只解决"这个仓库叫什么"和"哪些内容可见"
-name: mine
-exclude:
+name: mine       # 也是注册时的默认别名来源
+exclude:         # 发现时跳过的路径前缀（相对仓库根）
   - drafts
-maxDepth: 3
+  - archive
+maxDepth: 3      # 0 或省略 = 用默认上限
 ```
 
-`id` 的存在意义是"skill 改名后还能认出是同一个"，这是**作者自己的事**，工具不该管。
+**只允许这三个字段。** 遇到未知字段要**忽略而非报错**，这样带旧字段的仓库不会让 spm 罢工。
+
+> **绝对不要**在这里引入仓库 UUID 或每个 skill 的稳定 ID。
+> 这个文件只解决两件事：**这个仓库叫什么**，以及**哪些内容可见**。
+> skill 改名后如何追踪是作者自己的事，工具不该管。
 
 ---
 
-## 四、规模参考
+## 3. 发现规则
 
-一个能跑的实现大约：
+从 source 根开始递归：
 
-| | 数量 |
+| 规则 | 说明 |
 | --- | --- |
-| `src/**/*.ts` | 28 个 |
-| `test/` 文件 | 4 个 |
-| 测试用例 | 56 |
-| 运行时依赖 | 4 个（`commander` / `yaml` / `zod` / `picocolors`） |
-| 数据库 | 无 |
+| **遇到 `SKILL.md` 就停** | 该目录**本身**是一个 skill，不再往下走 |
+| 跳过目录 | `.git` `node_modules` `dist` `build` `target` `vendor` `__pycache__` `.venv` `venv` |
+| 隐藏目录 | 除 `.claude` `.agents` `.cursor` `.copilot` `.codex` 外一律跳过 |
+| `exclude` 前缀 | 整段匹配：等于某项，或以 `<项>/` 开头。排除 `drafts` 不得误伤 `drafts-old` |
+| 深度 | `maxDepth` 为 0 时用默认上限 5 |
 
-验收方式见 [`SPEC.md` § 10](./SPEC.md)。
+"遇 SKILL.md 就停"是让 `references/`、`scripts/` 不被误认成 skill 的关键。
+
+### 3.1 SKILL.md 解析
+
+YAML frontmatter（`---` 分隔，容忍 CRLF 和开头空行）：
+
+| 字段 | 规则 |
+| --- | --- |
+| `name` | 必填，且必须合法（见下） |
+| `description` | 必填；缺失时**回落到正文首段**（截断 250 字符）；再缺才算无效 |
+| 其余 | 原样保留，用于展示 |
+
+**skill 名校验**：`^[a-z0-9._-]+$`，**且不得以 `.` 开头**。
+
+后一条不是洁癖：名字会成为 `<installDir>/<name>` 的路径段，`..` 能让清单把软链接写到
+安装目录**之外**。这是实打实的安全问题。`.foo` 还会变成隐藏项，一并拒掉。
+
+**只校验字符集是不够的。**
+
+---
+
+## 4. 命令面
+
+| 命令 | 别名 | 作用 |
+| --- | --- | --- |
+| `spm init [dir]` | | 创建 `skills.yaml` |
+| `spm add <spec...>` | | 声明并安装 |
+| `spm install [spec...]` | `i` | 无参 = 按清单还原；带参 = 等价 `add` |
+| `spm remove <spec...>` | `rm` | 去声明 + 删链接 |
+| `spm list` | `ls` | 列出声明及链接状态 |
+| `spm find [query]` | | 跨所有已注册 source 搜索 |
+| `spm info <spec>` | | 单个 skill 详情 |
+| `spm doctor [--fix]` | | 清单 vs 磁盘一致性检查 |
+| `spm update [spec...]` | `up` | github 源重新 fetch，然后重新链接 |
+| `spm source add\|remove\|list\|refresh` | | source 管理 |
+| `spm config` | | 打印解析后的路径与配置 |
+
+**全局选项**：`-g/--global`（作用于 `~/.config/spm/skills.yaml`）、`-q/--quiet`。
+
+**常用子选项**：`-f/--force`（覆盖非软链接条目）、`--no-prune`、`--frozen`（只校验不写）、
+`--json`（只读命令）。
+
+### 4.1 scope 模型（关键设计）
+
+```
+project: manifestDir = cwd,        installBaseDir = cwd
+global:  manifestDir = SPM_HOME,   installBaseDir = $HOME
+```
+
+**`-g` 的语义是"把 `$HOME` 当成项目根"**。两个 scope 走**完全相同**的 reconcile 流程，
+只有根不同：
+
+| | 根 | `installDirs: [.agents/skills]` 落在 |
+| --- | --- | --- |
+| `spm i` | `<cwd>` | `<cwd>/.agents/skills` |
+| `spm i -g` | `$HOME` | `~/.agents/skills` |
+
+> 反例：如果全局也相对 `~/.config/spm/` 解析，`.agents/skills` 会变成
+> `~/.config/spm/.agents/skills`，两个 scope 反而不对称了。**不要这么做。**
+
+`installDirs` 必须是**数组**：同一批 skill 要链接进每一个列出的目录。多个目标之间不共享
+状态——所以**不需要引用计数**。
+
+---
+
+## 5. spec 语法
+
+| 写法 | 含义 |
+| --- | --- |
+| `alias` | **整源**（推荐形式） |
+| `alias/*` | 整源（需引号） |
+| `alias/skill` | 单个 |
+| `./path` `~/path` `/abs/path` | 本地目录 = 整源，按需注册 |
+| `owner/repo` | github 仓库 = 整源 |
+| `owner/repo/skill` | github 单个 |
+| `owner/repo#tag` | 钉住 github 的 tag/branch |
+| `skill-name` | 在所有已注册 source 里查找 |
+
+### 5.1 解析优先级
+
+```
+1. 以 ./ ../ / ~ 开头，或等于 . / ..          → 本地路径
+2. 首段是已知别名（清单 sources 里有，或 sources/ 下已注册） → 按别名解析
+3. 单段（无斜杠）                             → 别名优先，其次按 skill 名全局查找
+4. 其余                                       → github owner/repo[/skill]
+```
+
+### 5.2 为什么必须有裸别名形式
+
+`*` 由 **shell 先行展开**，spm 根本收不到：
+
+```
+$ spm add mine/*
+(eval):14: no matches found: mine/*        # zsh 默认 nomatch 直接拒绝
+```
+
+更糟的是当前目录**恰好有** `mine/` 目录时，它会静默展开成那个目录里的文件名，
+spm 拿着完全不相干的东西去解析。
+
+所以 `spm add mine` 是首选写法：无通配符、不需要引号、不可能被误读。
+
+裸词解析"别名优先于 skill 名"，且安装输出**必须列出展开后的每个 skill**，让结果无歧义。
+
+### 5.3 别名冲突
+
+注册别名时优先级：`--alias` 参数 > `skill-repository.yaml` 的 `name` > 目录名 / repo 名。
+
+别名已存在且指向别处时**报错**，列出当前绑定，要求 `--force` 才重绑。**不要静默覆盖。**
+
+### 5.4 已有注册必须复用
+
+按路径注册时，若该目录**已经是某个已注册 source 的根**，必须**复用那个别名**，
+而不是按目录名再注册一遍——后者会把同一个源的全部 skill 往清单里塞第二遍，
+然后报一个莫名其妙的"两个源提供同一个 skill"。
+
+比较时必须用 **realpath**：注册项本身是软链接，拿链接路径和用户给的目录比永远不会相等。
+
+若该目录是某个已注册 source 的**子目录**，报错并提示 `spm add <别名>/<skill>`。
+
+---
+
+## 6. 安装语义（reconcile）
+
+### 6.1 流程
+
+```
+读清单
+  → 解析每个条目为 (sourceRoot, skill) 集合（整源条目展开为全量）
+  → 对每个 installDir × skill：落链接
+  → prune：删掉不再声明的链接
+```
+
+### 6.2 单个链接的动作
+
+| 磁盘现状 | 动作 |
+| --- | --- |
+| 软链接且指向正确 | **不动**（幂等的关键） |
+| 软链接但指向别处 | 重指 |
+| 不存在 | 创建（先 `mkdir -p` 父目录） |
+| **真实目录或文件** | **拒绝并报告**，`--force` 才覆盖 |
+
+目标为空时**不要删目录本身**。
+
+### 6.3 prune 的判据（核心设计）
+
+> **只删"目标落在 `SPM_HOME/sources/` 之内、且当前清单未声明"的软链接。**
+
+这一条判据取代了"物料表 + 来源表 + 引用计数"那一整套记账机制：**"这个链接是谁建的"
+不再需要记录，问它指向哪里就够了。**
+
+副产品是**安全性**：用户手工建的、指向自己工作副本的链接，因为目标不在 source 缓存内，
+永远不会被碰。
+
+### 6.4 移除
+
+`rm` 走"改清单 → 重新 reconcile"，靠 prune 删链接。
+
+**不要写第二套删除逻辑**——两套逻辑必然漂移。
+
+### 6.5 幂等性
+
+同一份清单连跑两次，第二次必须**全部 unchanged、零删除**。
+
+这是最重要的不变量，**必须有一条测试直接断言它**。
+
+---
+
+## 7. source 生命周期
+
+### 7.1 local
+
+```
+spm source add ./path  →  ln -s <abs>  ~/.config/spm/sources/<alias>
+```
+
+校验目标存在且含至少一个 SKILL.md。
+
+### 7.2 github
+
+clone 到临时目录 → 读 `skill-repository.yaml` 拿 `name` → rename 到 `sources/<alias>`。
+
+`refresh` = `git fetch --depth 1 origin <ref> && git checkout --force FETCH_HEAD`。
+
+### 7.3 自举（Bootstrap）
+
+**这是全局清单存在的全部理由。**
+
+`spm i` 遇到清单里声明了、但本地还没有的 source，必须**自动注册**（local 建链接 /
+github clone），然后继续安装。
+
+所以一台新机器 + 一份 `skills.yaml` 就能从零还原，**不需要先手动 `source add`**。
+
+---
+
+## 8. 明确不做的事
+
+做错了就会退回"不好用"的老路：
+
+| 不做 | 原因 |
+| --- | --- |
+| **版本求解** | SKILL.md 之间没有依赖关系，清单是平的。`ref` 只为可复现，不参与求解 |
+| **数据库** | 状态 = 清单 + 磁盘上的软链接。换台机器/换个同事，`git diff` 就能看全 |
+| **引用计数** | 判断"链接是不是 spm 建的"用 § 6.3 那一条判据，不需要所有权表 |
+| **稳定 ID / UUID** | 改名是作者自己的事 |
+| **反向扫描** | 扫描已安装内容反推清单。npm 也没有，不是缺口 |
+| **group / 组合概念** | 整源安装 + 清单本身已够表达"一套 skill" |
+
+---
+
+## 9. 容易做错的地方（务必注意）
+
+### 9.1 清单写入必须"先验证，后提交"
+
+`add` 的写入顺序**必须**是：
+
+```
+在清单的副本上暂存改动
+  → 完整解析（这一步会暴露"两个源提供同一 skill"之类的冲突）
+  → 解析通过才写盘
+```
+
+**不要先写盘再解析。** 否则一个冲突的 spec 会留下半写的清单：用户明明没加成功，
+清单里却多了一条，删都删不干净。
+
+### 9.2 doctor 的"链接缺失"必须由清单驱动去查
+
+检查"每个声明的 skill 在每个 installDir 下是否都有正确的链接"时，**必须遍历清单**。
+
+**只遍历磁盘上有什么是不够的**：被删掉的链接、被别的工具改指他处的链接，都没有目录项
+可供遍历，会**完全漏报**——而这两种恰恰是最常见的故障。
+
+### 9.3 ⚠️ TypeScript 7 的 `types` 默认值变了
+
+TS 6/7 起，`types` 默认是 `[]`，**不再自动包含 `node_modules/@types/*` 下的所有包**。
+必须在 `tsconfig.json` 里显式写：
+
+```jsonc
+{ "compilerOptions": { "types": ["node"] } }
+```
+
+漏了会得到满屏 `Cannot find name 'process'` / `Cannot find name 'node:fs'`。
+
+**没有任何配置值表示"全部包含"**：`"*"` 不是，不设就是没有。
+
+> 满屏这种报错时，第一反应容易怀疑是环境/二进制出了问题。**不是**——就是缺这一行。
+
+TS7 的其他要求：`target` 最低 ES2015（`es5` 已移除）、`moduleResolution` 不能用
+`node`/`node10`/`classic`、`baseUrl` 已移除、`esModuleInterop` 与 `alwaysStrict` 强制开启。
+
+### 9.4 tsconfig 拆两份，且 `test/` 必须进类型检查
+
+```jsonc
+// tsconfig.json        检查用：noEmit，覆盖 src/ 和 test/
+// tsconfig.build.json  产出用：rootDir=src, outDir=dist, declaration, sourceMap
+```
+
+只写 `include: ["src/**/*.ts"]` 的话测试文件完全不被检查——而 vitest 默认也不做类型检查，
+**测试里的类型错误永远不会暴露**。
+
+### 9.5 其他
+
+- 清单写入要**确定性排序**（别名、条目都排序），否则 `add` 会产生噪声 diff。
+- **空段落不要写出来**（`sources: {}` 就别输出），让文件保持干净。
+- YAML 校验用 zod，失败要报清楚哪个文件哪里错了。
+- 命令失败时**清单要保持原样**，不要留半成品。
+
+---
+
+## 10. 交付物与验收
+
+### 10.1 技术栈
+
+| | |
+| --- | --- |
+| 语言 | TypeScript + Node，ESM |
+| 入口 | `bin` 指向 `dist/cli.js` |
+| 运行时依赖 | 只允许 4 个：`commander`、`yaml`、`zod`、`picocolors` |
+| 数据库 | 无 |
+| 规模参考 | `src/**/*.ts` 约 28 个，测试约 56 个用例 |
+
+### 10.2 功能验收
+
+```bash
+# 自举：只有一份清单，什么都没有
+spm i -g                          # → 自动注册 source、创建链接
+
+# 幂等：连跑两次
+spm i && spm i                    # → 第二次全部 unchanged、零删除
+
+# 整源（裸别名，无需引号）
+spm add mine
+spm add /another/repo             # 本地路径
+
+# 多安装目录：两个目录下都出现全部 skill
+# skills.yaml: installDirs: [.agents/skills, .claude/skills]
+
+# prune：从清单删掉一条后重跑，对应链接被删除
+spm i
+
+# 一致性
+spm doctor                        # → healthy，退出码 0
+```
+
+### 10.3 doctor 必须能发现的问题
+
+| 问题 | 级别 |
+| --- | --- |
+| 声明的 skill 源目录不存在 | error |
+| 链接指向错误目标 | error |
+| 真实目录占用了声明的 skill 名 | error |
+| 安装目录不可写 | error |
+| 安装目录位于 source 缓存内 | error |
+| 清单无法解析（source 不可达、声明冲突） | error |
+| **链接缺失** | warning |
+| 已声明但未注册的 source | warning |
+| 指向 source 缓存但未声明的孤儿链接 | warning |
+| 安装目录尚不存在 | warning |
+
+### 10.4 必须有的测试
+
+1. 清单读写往返 + 确定性排序
+2. spec 解析（每种形式各一条）
+3. 发现边界：遇 SKILL.md 停、exclude 整段匹配、跳过目录、深度上限
+4. **skill 名拒绝 `..` 和点开头**
+5. **安装幂等**（同清单跑两次结果一致）
+6. 多 `installDirs` 下每个目录都正确落链与清理
+7. prune 只删指向 source 缓存的链接，**手工链接不动**
+8. 冲突的 spec **不得污染清单**
+9. 已有注册的路径被复用时**不产生重复条目**
+
+---
+
+## 附：需求原文
+
+> 我想要让你帮我做一个类似 npm/maven 的 SKILL 管理工具.
+>
+> 现在这个 SKills 工具不好用.
+>
+> 我希望做成声明式的依赖管理工具
+>
+> 并且类似 maven 有全局配置和本地仓库路径(~/.config/spm/settings.yaml)
+>
+> local/github 两种类型的仓库都支持
+>
+> 但是本地的也是要注册一下才能知道这个 source 的路径的 (通过软连接进行 register 的动作)
+>
+> 同时支持 install 单个和一整个 source 两种方式.
+>
+> 命令行操作类似于 npm,比如 install/i 等等各种命令集合
