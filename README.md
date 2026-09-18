@@ -156,9 +156,23 @@ spm's?" is answered by asking whether its target lives in the source cache.
 
 ```bash
 npm run dev        # run from source via tsx
+npm run typecheck  # checks src/ and test/ together
 npm test           # vitest
-npm run typecheck
-npm run build
+npm run build      # emit to dist/ (src only)
 ```
 
 Tests write to a temp `SPM_HOME`, never your real one.
+
+Two configs, deliberately split:
+
+- `tsconfig.json` — check-only (`noEmit`), covering `src/` **and** `test/`, so a
+  type error in a test is a type error.
+- `tsconfig.build.json` — what actually emits, restricted to `src/`.
+
+This project is on **TypeScript 7**, the native compiler. The one thing that
+bites on migration: `types` now defaults to `[]` instead of auto-including
+every `@types/*` package, so `tsconfig.json` names `["node"]` explicitly.
+Omit it and every `process` and `node:fs` reference becomes an error. There is
+no "include everything" value — `"*"` isn't it, and unset means none.
+Files under `src/` therefore have to `import` what they use rather than lean on
+ambient types.

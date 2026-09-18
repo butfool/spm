@@ -4,18 +4,22 @@
     "lib": ["ES2023"],
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "rootDir": "src",
-    "outDir": "dist",
+
+    // TypeScript 7 no longer auto-includes every @types/* package: `types`
+    // defaults to [], so the ones the program actually needs are named here.
+    "types": ["node"],
+
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
     "exactOptionalPropertyTypes": true,
     "verbatimModuleSyntax": true,
-    "declaration": true,
-    "sourceMap": true,
     "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true
+    "forceConsistentCasingInFileNames": true,
+
+    // The base config is for checking, not emitting — `tsc -p tsconfig.json`
+    // covers src and test. Emitting is tsconfig.build.json's job.
+    "noEmit": true
   },
-  "include": ["src/**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }
