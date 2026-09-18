@@ -218,6 +218,37 @@ describe("resolveSpec", () => {
     expect(selection.skills).toEqual(["alpha"]);
   });
 
+  it("treats a bare alias as the whole source", async () => {
+    const manifest = await setup();
+    const selection = await resolveSpec("fixture", { manifest, register: true });
+
+    expect(selection.alias).toBe("fixture");
+    expect(selection.entry).toBe("fixture/*");
+    expect(selection.skills).toBe("*");
+  });
+
+  it("reuses an existing registration for a path instead of duplicating it", async () => {
+    await setup(); // registers the repo under the alias "fixture"
+
+    // The same directory, reached by its real path rather than the alias.
+    const selection = await resolveSpec(repo, { manifest: null, register: true });
+
+    expect(selection.alias).toBe("fixture");
+    expect(selection.entry).toBe("fixture/*");
+  });
+
+  it("prefers a source alias over a same-named skill elsewhere", async () => {
+    const manifest = await setup();
+    const other = tmpdir("spm-other");
+    writeSkill(other, "fixture", "fixture"); // a skill literally named "fixture"
+    registerLocal(other, "other");
+
+    const selection = await resolveSpec("fixture", { manifest, register: true });
+
+    expect(selection.entry).toBe("fixture/*");
+    expect(selection.skills).toBe("*");
+  });
+
   it("looks up a bare skill name across registered sources", async () => {
     await setup();
     const selection = await resolveSpec("beta", { manifest: null, register: true });

@@ -15,6 +15,7 @@ import {
   registerLocal,
   sourceDeclFor,
   sourcePath,
+  type RegisteredSource,
 } from "./source.js";
 
 /** Which manifest a command operates on. */
@@ -99,19 +100,30 @@ export async function resolveSpec(
 
   // A leading segment that is a known alias wins over github syntax — that's
   // what lets `my-org/my-repo` work when `my-org` is a registered alias.
-  if (segments.length >= 2 && (await isKnownAlias(segments[0]!, ctx))) {
+  if (segments.length >= 2 && isKnownAlias(segments[0]!, ctx.manifest)) {
     return resolveAliasSpec(segments[0]!, segments.slice(1).join("/"), ctx);
   }
 
   if (segments.length === 1) {
-    return resolveBareSkillSpec(segments[0]!, ctx);
+    const name = segments[0]!;
+    // A bare word that names a source installs the whole source. This is the
+    // shell-safe spelling of `alias/*`: an unquoted `*` is expanded — or, in
+    // zsh's default `nomatch` mode, rejected — before spm ever sees it.
+    if (isKnownAlias(name, ctx.manifest)) {
+      return resolveAliasSpec(name, "*", ctx);
+    }
+    return resolveBareSkillSpec(name, ctx);
   }
 
   return resolveGithubSpec(segments, ctx);
 }
 
-async function isKnownAlias(alias: string, ctx: ResolveContext): Promise<boolean> {
-  if (ctx.manifest?.sources[alias]) return true;
+/**
+ * Whether `alias` is a source we can resolve: either declared by the manifest
+ * being edited, or registered globally.
+ */
+export function isKnownAlias(alias: string, manifest: Manifest | null): boolean {
+  if (manifest?.sources[alias] !== undefined) return true;
   return isRegistered(alias);
 }
 
@@ -121,18 +133,31 @@ async function resolvePathSpec(spec: string, ctx: ResolveContext): Promise<Sourc
     throw new SpmError(`no such directory: ${abs}`);
   }
 
-  // Registering a directory that lives inside a source we already have would
-  // put the same skills on the manifest twice, under two aliases. Point at
-  // the existing source instead — that's almost always what was meant.
-  const enclosing = await findEnclosingSource(abs);
-  if (enclosing !== null) {
-    const skill = discoverOptionsFor(enclosing.root);
-    const inner = discoverSkills(abs, skill);
+  const existing = await findByRealPath(abs);
+
+  // Already registered under some alias: reuse it rather than registering the
+  // same directory a second time under a new name, which would put every one
+  // of its skills on the manifest twice.
+  if (existing !== null && existing.exact) {
+    return {
+      alias: existing.alias,
+      root: sourcePath(existing.alias),
+      decl: ctx.manifest?.sources[existing.alias] ?? (await sourceDeclFor(existing.source)),
+      entry: `${existing.alias}/*`,
+      skills: "*",
+      label: spec,
+    };
+  }
+
+  // A subdirectory of a source we already have. Registering it would duplicate
+  // the skills it contains, so point at the source that already covers it.
+  if (existing !== null) {
+    const inner = discoverSkills(abs, discoverOptionsFor(existing.root));
     throw new SpmError(
-      `${abs} is inside the already-registered source "${enclosing.alias}"`,
+      `${abs} is inside the already-registered source "${existing.alias}"`,
       inner.length === 1
-        ? `Use \`spm add ${enclosing.alias}/${inner[0]!.name}\` instead.`
-        : `Use \`spm add ${enclosing.alias}/*\` for the whole source, or name a skill from it.`,
+        ? `Use \`spm add ${existing.alias}/${inner[0]!.name}\` instead.`
+        : `Use \`spm add ${existing.alias}\` for the whole source, or name a skill from it.`,
     );
   }
 
@@ -152,19 +177,24 @@ async function resolvePathSpec(spec: string, ctx: ResolveContext): Promise<Sourc
 }
 
 /**
- * Finds a registered source whose root contains `abs`, if any.
+ * Finds the registered source a directory belongs to: an exact match on the
+ * source root, or — when `abs` is a subdirectory of one — that enclosing
+ * source, which callers report as an error rather than silently duplicating.
  *
  * Both sides are realpath'd first: a registered local source is a symlink, so
- * comparing the link path against a user-supplied directory would never match.
+ * comparing the link path against a user-supplied directory never matches.
  */
-async function findEnclosingSource(
+async function findByRealPath(
   abs: string,
-): Promise<{ alias: string; root: string } | null> {
+): Promise<{ source: RegisteredSource; alias: string; root: string; exact: boolean } | null> {
   const real = canonical(abs);
   for (const source of await listSources()) {
     const root = canonical(source.path);
-    if (root !== real && isInside(real, root)) {
-      return { alias: source.alias, root };
+    if (root === real) {
+      return { source, alias: source.alias, root, exact: true };
+    }
+    if (isInside(real, root)) {
+      return { source, alias: source.alias, root, exact: false };
     }
   }
   return null;
@@ -471,17 +501,21 @@ export function specToEntryKey(spec: string, manifest: Manifest | null): string 
   const segments = trimmed.split("/");
   const head = segments[0]!;
 
-  if (segments.length >= 2 && (manifest?.sources[head] !== undefined || isRegistered(head))) {
+  if (segments.length >= 2 && isKnownAlias(head, manifest)) {
     return trimmed; // alias/skill or alias/*
+  }
+  if (segments.length === 1) {
+    return isKnownAlias(head, manifest) ? `${head}/*` : head;
   }
   if (segments.length === 2) return trimmed; // owner/repo
   if (segments.length === 3) return `${head}/${segments[1]}:${segments[2]}`;
 
-  return trimmed; // bare skill name
+  return trimmed;
 }
 
 /** True when `spec` is a bare skill name rather than an alias or repo. */
-export function isBareSpec(spec: string): boolean {
+export function isBareSpec(spec: string, manifest: Manifest | null): boolean {
   const trimmed = spec.trim();
-  return !isPathLike(trimmed) && !trimmed.includes("/");
+  if (isPathLike(trimmed) || trimmed.includes("/")) return false;
+  return !isKnownAlias(trimmed, manifest);
 }

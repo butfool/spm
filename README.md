@@ -65,12 +65,23 @@ Useful flags: `-g/--global`, `-f/--force`, `--frozen` (verify without writing),
 | Form | Meaning |
 | --- | --- |
 | `alias/skill` | One skill from a registered source |
-| `alias/*` | Every skill in that source |
+| `alias` | **Every skill in that source** |
+| `alias/*` | Same, but quote it — see below |
 | `./path`, `~/path`, `/abs/path` | A local directory (all of it), registered on the fly |
 | `owner/repo` | A github repo, all skills |
 | `owner/repo/skill` | One skill from a github repo |
 | `owner/repo#v1.2.3` | Pin a github repo to a tag or branch |
 | `skill-name` | Looked up across every registered source |
+
+**Prefer the bare alias over `alias/*`.** A `*` is expanded by the shell before
+spm ever sees it, so `spm add mine/*` in zsh (whose default `nomatch` mode
+rejects unmatched globs) fails with `no matches found` — and in a directory
+that *does* contain a `mine/` folder, it silently expands to whatever is in
+there instead. `spm add mine` needs no quoting and can't be misread.
+
+A bare word is resolved as a source alias first, and only then as a skill name.
+So if an alias and a skill elsewhere share a name, the alias wins; the install
+output names every skill it expanded, so what happened is never ambiguous.
 
 A bare name that matches in more than one source is an error listing the
 candidates, rather than a guess.
