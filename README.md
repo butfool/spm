@@ -100,7 +100,7 @@ installDirs:
 # Where each alias comes from, so a fresh clone can bootstrap with `spm i`.
 sources:
   mine:
-    path: ~/Code/my-skills
+    path: ~/my-skills
   upstream:
     repo: anthropics/skills
     ref: main

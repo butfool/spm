@@ -1,6 +1,6 @@
 # 实现 spm：面向 AI Coding Agent 的声明式 SKILL 管理器
 
-你要在 `~/Code/ButCool/spm` 从零实现一个命令行工具 `spm`，用 TypeScript + Node 编写。
+实现一个命令行工具 `spm`，用 TypeScript + Node 编写，代码放在你选定的目录里。
 
 它管理 AI coding agent（Claude Code、Cursor、Codex 等）读取的 `SKILL.md` 文件，做成
 **声明式依赖管理**：用户在 `skills.yaml` 里声明要哪些 skill，`spm install` 让文件系统
@@ -74,7 +74,7 @@ installDirs:            # 可省略；省略则继承 settings，再省略则 ["
 
 sources:                # 让清单自描述，新机器能自举
   mine:
-    path: ~/Code/my-skills
+    path: ~/my-skills
   upstream:
     repo: anthropics/skills
     ref: main
