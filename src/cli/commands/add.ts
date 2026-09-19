@@ -10,7 +10,7 @@ import {
 import { resolveSpec, type SourceSelection, type Scope } from "../../core/resolve.js";
 import { dim, info } from "../../log.js";
 import { loadManifest, scopeFrom, type GlobalOptions } from "../context.js";
-import { report } from "../report.js";
+import { failOnSkippedSkills, report } from "../report.js";
 
 interface AddOptions extends GlobalOptions {
   force?: boolean;
@@ -64,7 +64,7 @@ export async function runAdd(
   }
 
   const { expandSelections, resolveManifestEntries } = await import("../../core/resolve.js");
-  const targets = expandSelections(
+  const { targets, skipped } = expandSelections(
     await resolveManifestEntries(staged, {
       register: true,
       force: opts.force ?? false,
@@ -91,6 +91,10 @@ export async function runAdd(
     installDirsFor(staged, scope),
     scope.manifestDir,
   );
+
+  // The links above are in place; a file discovery refused still fails the
+  // command, so the omission cannot pass unnoticed.
+  failOnSkippedSkills(skipped);
 }
 
 /**

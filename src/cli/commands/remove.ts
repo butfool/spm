@@ -7,9 +7,10 @@ import {
   resolveManifestEntries,
   specToEntryKey,
   type Scope,
-} from "../../core/resolve.js";import { dim, info, warn } from "../../log.js";
+} from "../../core/resolve.js";
+import { dim, info, warn } from "../../log.js";
 import { loadManifest, scopeFrom, type GlobalOptions } from "../context.js";
-import { report } from "../report.js";
+import { failOnSkippedSkills, report } from "../report.js";
 
 export function registerRemoveCommand(program: Command): void {
   program
@@ -73,7 +74,7 @@ export async function runRemove(
   info(dim(`updated ${scope.manifestDir}/skills.yaml`));
 
   // Re-resolve what remains, then let the install pass prune the rest.
-  const targets = expandSelections(
+  const { targets, skipped } = expandSelections(
     await resolveManifestEntries(manifest, { register: false }),
   );
 
@@ -86,6 +87,8 @@ export async function runRemove(
     installDirsFor(manifest, scope),
     scope.manifestDir,
   );
+
+  failOnSkippedSkills(skipped);
 }
 
 /** Finds the manifest entries a specifier refers to. */
@@ -124,7 +127,7 @@ async function findCoveringEntry(
       const provided = expandSelections(
         await resolveManifestEntries({ ...manifest, skills: [entry] }, { register: false }),
       );
-      if (provided.some((t) => t.name === name)) return key;
+      if (provided.targets.some((t) => t.name === name)) return key;
     } catch {
       // A source is unreachable; don't guess about what it would provide.
       continue;

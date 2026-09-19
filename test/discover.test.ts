@@ -7,7 +7,7 @@ import {
   parseFrontmatter,
   validSkillName,
 } from "../src/core/discover.js";
-import { clearHome, tmpdir, writeSkill } from "./helpers.js";
+import { clearHome, tmpdir, writeSkill, writeSkillFile } from "./helpers.js";
 
 afterEach(clearHome);
 
@@ -71,7 +71,7 @@ describe("discoverSkills", () => {
     fs.mkdirSync(path.join(root, "alpha", "references"), { recursive: true });
     fs.writeFileSync(path.join(root, "alpha", "references", "SKILL.md"), "---\nname: nested\ndescription: x\n---\n");
 
-    const names = discoverSkills(root).map((s) => s.name);
+    const names = discoverSkills(root).skills.map((s) => s.name);
     expect(names).toEqual(["alpha"]);
   });
 
@@ -81,7 +81,9 @@ describe("discoverSkills", () => {
     writeSkill(root, "drafts/gamma", "gamma");
     writeSkill(root, "archive/old", "old");
 
-    const names = discoverSkills(root, { exclude: ["drafts", "archive"] }).map((s) => s.name);
+    const names = discoverSkills(root, { exclude: ["drafts", "archive"] }).skills.map(
+      (s) => s.name,
+    );
     expect(names).toEqual(["alpha"]);
   });
 
@@ -91,7 +93,7 @@ describe("discoverSkills", () => {
     writeSkill(root, ".git/sneaky", "sneaky");
     writeSkill(root, "node_modules/dep", "dep");
 
-    expect(discoverSkills(root).map((s) => s.name)).toEqual(["alpha"]);
+    expect(discoverSkills(root).skills.map((s) => s.name)).toEqual(["alpha"]);
   });
 
   it("records the path relative to the source root", () => {
@@ -99,29 +101,54 @@ describe("discoverSkills", () => {
     writeSkill(root, "alpha", "alpha");
     writeSkill(root, "nested/beta", "beta");
 
-    const byName = Object.fromEntries(discoverSkills(root).map((s) => [s.name, s.relativePath]));
+    const byName = Object.fromEntries(
+      discoverSkills(root).skills.map((s) => [s.name, s.relativePath]),
+    );
     expect(byName).toEqual({ alpha: "alpha", beta: "nested/beta" });
   });
 
-  it("reports a directory whose SKILL.md is unusable", () => {
+  it("reports every SKILL.md it skipped, with the reason", () => {
     const root = tmpdir("spm-disc");
     writeSkill(root, "good", "good");
-    fs.mkdirSync(path.join(root, "bad"), { recursive: true });
-    fs.writeFileSync(path.join(root, "bad", "SKILL.md"), "---\nname: NO_UPPER\ndescription: x\n---\n");
+    writeSkillFile(root, "uppercase", "---\nname: Frontend.React.Hooks\ndescription: x\n---\n");
+    writeSkillFile(root, "dotted", "---\nname: ..\ndescription: x\n---\n");
+    writeSkillFile(root, "nodesc", "---\nname: nodesc\n---\n");
+    writeSkillFile(root, "noname", "---\ndescription: x\n---\n");
 
-    const invalid: string[] = [];
-    const found = discoverSkills(root, { onInvalid: (file) => invalid.push(file) });
+    const { skills, invalid } = discoverSkills(root);
 
-    expect(found.map((s) => s.name)).toEqual(["good"]);
-    expect(invalid).toHaveLength(1);
+    expect(skills.map((s) => s.name)).toEqual(["good"]);
+    expect(invalid.map((i) => i.relativePath)).toEqual([
+      "dotted/SKILL.md",
+      "nodesc/SKILL.md",
+      "noname/SKILL.md",
+      "uppercase/SKILL.md",
+    ]);
+    expect(invalid.map((i) => i.reason)).toEqual([
+      'name ".." may not start with a dot',
+      "missing `description` in frontmatter, with no opening paragraph in the body to fall back to",
+      "missing `name` in frontmatter",
+      'name "Frontend.React.Hooks" may only contain lowercase letters, digits, dots, dashes and underscores',
+    ]);
+    expect(invalid.every((i) => i.skillFile.endsWith(i.relativePath))).toBe(true);
+  });
+
+  it("accepts a description that falls back to the opening paragraph", () => {
+    const root = tmpdir("spm-disc");
+    writeSkillFile(root, "tacit", "---\nname: tacit\n---\n\nDoes the thing.\n");
+
+    const { skills, invalid } = discoverSkills(root);
+
+    expect(skills.map((s) => s.name)).toEqual(["tacit"]);
+    expect(invalid).toEqual([]);
   });
 
   it("stops at maxDepth", () => {
     const root = tmpdir("spm-disc");
     writeSkill(root, "a/b/c/deep", "deep");
 
-    expect(discoverSkills(root, { maxDepth: 1 })).toHaveLength(0);
-    expect(discoverSkills(root, { maxDepth: 5 }).map((s) => s.name)).toEqual(["deep"]);
+    expect(discoverSkills(root, { maxDepth: 1 }).skills).toHaveLength(0);
+    expect(discoverSkills(root, { maxDepth: 5 }).skills.map((s) => s.name)).toEqual(["deep"]);
   });
 
   it("falls back to the opening paragraph when description is missing", () => {
@@ -130,7 +157,7 @@ describe("discoverSkills", () => {
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, "SKILL.md"), "---\nname: tacit\n---\n\nDoes the thing.\n\nMore.\n");
 
-    const [skill] = discoverSkills(root);
+    const [skill] = discoverSkills(root).skills;
     expect(skill?.description).toBe("Does the thing.");
   });
 });

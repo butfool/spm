@@ -1,9 +1,10 @@
 import type { Command } from "commander";
-import { discoverSkills } from "../../core/discover.js";
+import { discoverSkills, skippedFrom, skippedLine } from "../../core/discover.js";
 import { readRepoManifest } from "../../core/repo-manifest.js";
 import { resolveSpec } from "../../core/resolve.js";
 import { bold, dim, heading, info } from "../../log.js";
 import { displayPath, loadManifest, scopeFrom, type GlobalOptions } from "../context.js";
+import { failOnSkippedSkills } from "../report.js";
 
 export function registerInfoCommand(program: Command): void {
   program
@@ -23,16 +24,21 @@ export function registerInfoCommand(program: Command): void {
 
       const skillName = selection.skills[0]!;
       const repo = readRepoManifest(selection.root);
-      const skills = discoverSkills(selection.root, {
+      const { skills, invalid } = discoverSkills(selection.root, {
         exclude: repo.exclude,
         maxDepth: repo.maxDepth,
       });
       const skill = skills.find((s) => s.name === skillName);
+      const skipped = skippedFrom(selection.alias ?? selection.label, invalid);
 
       if (!skill) {
+        const details = [
+          skills.length > 0 ? `available: ${skills.map((s) => s.name).join(", ")}` : "",
+          ...(skipped.length > 0 ? ["skipped:", ...skipped.map(skippedLine)] : []),
+        ].filter((line) => line !== "");
         throw new Error(
           `skill "${skillName}" not found in ${selection.label}` +
-            (skills.length > 0 ? `\navailable: ${skills.map((s) => s.name).join(", ")}` : ""),
+            (details.length > 0 ? `\n  ${details.join("\n  ")}` : ""),
         );
       }
 
@@ -51,6 +57,7 @@ export function registerInfoCommand(program: Command): void {
             2,
           )}\n`,
         );
+        failOnSkippedSkills(skipped);
         return;
       }
 
@@ -70,6 +77,8 @@ export function registerInfoCommand(program: Command): void {
           info(`  ${dim(key)}: ${formatValue(value)}`);
         }
       }
+
+      failOnSkippedSkills(skipped);
     });
 }
 

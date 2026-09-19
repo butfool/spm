@@ -1,4 +1,5 @@
 import path from "node:path";
+import type { SkippedSkill } from "../core/discover.js";
 import { manifestExists, readManifest, type Manifest } from "../core/manifest.js";
 import {
   expandSelections,
@@ -61,13 +62,17 @@ export async function reconcile(
   manifest: Manifest,
   scope: Scope,
   opts: { register: boolean; force: boolean },
-): Promise<{ targets: SkillTarget[]; selections: Awaited<ReturnType<typeof resolveManifestEntries>> }> {
+): Promise<{
+  targets: SkillTarget[];
+  selections: Awaited<ReturnType<typeof resolveManifestEntries>>;
+  skipped: SkippedSkill[];
+}> {
   const selections = await resolveManifestEntries(manifest, {
     register: opts.register,
     force: opts.force,
   });
-  const targets = expandSelections(selections);
-  return { targets, selections };
+  const { targets, skipped } = expandSelections(selections);
+  return { targets, selections, skipped };
 }
 
 /** Shortens an absolute path to ~-relative form for display. */

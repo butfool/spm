@@ -20,6 +20,17 @@ export function writeSkill(root: string, relDir: string, name: string, descripti
 }
 
 /**
+ * Writes literal SKILL.md content into `<root>/<relDir>/SKILL.md`, for fixtures
+ * whose frontmatter is meant to be unusable.
+ */
+export function writeSkillFile(root: string, relDir: string, content: string): string {
+  const dir = path.join(root, relDir);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "SKILL.md"), content, "utf8");
+  return dir;
+}
+
+/**
  * Points SPM_HOME at a fresh directory for the duration of a test, so nothing
  * touches the developer's real ~/.config/spm.
  */

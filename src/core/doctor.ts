@@ -2,11 +2,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { isInside, sourcesDir } from "../config.js";
 import { exists, isDirectory, isSymlink, linkPointsTo, readLink } from "../fsutil.js";
+import { skippedLine, type SkippedSkill } from "./discover.js";
 import { installDirsFor } from "./install.js";
 import type { Manifest } from "./manifest.js";
 import {
   expandSelections,
   resolveManifestEntries,
+  SkillResolutionError,
   type Scope,
   type SkillTarget,
 } from "./resolve.js";
@@ -58,12 +60,18 @@ export async function diagnose(
     });
   }
 
-  // 2. Every declared skill must resolve to a real directory.
+  // 2. Every declared skill must resolve to a real directory, and every
+  // SKILL.md discovery skipped must be reported.
   let targets: SkillTarget[] = [];
   try {
     const selections = await resolveManifestEntries(manifest, { register: false });
-    targets = expandSelections(selections);
+    const expansion = expandSelections(selections);
+    targets = expansion.targets;
+    pushInvalidSkillIssues(issues, expansion.skipped);
   } catch (err) {
+    // An entry that resolves to nothing aborts the expansion. The skipped
+    // files explain why, so they are reported even though the walk stopped.
+    if (err instanceof SkillResolutionError) pushInvalidSkillIssues(issues, err.skipped);
     issues.push({
       level: "error",
       kind: "unresolvable_manifest",
@@ -174,6 +182,23 @@ export async function diagnose(
   }
 
   return { issues, targets, installDirs };
+}
+
+/**
+ * One issue per SKILL.md that discovery refused to use.
+ *
+ * These count as errors: an entry whose file became unusable is a broken
+ * manifest, not a cosmetic problem the next install pass can repair.
+ */
+function pushInvalidSkillIssues(issues: Issue[], skipped: readonly SkippedSkill[]): void {
+  for (const item of skipped) {
+    issues.push({
+      level: "error",
+      kind: "invalid_skill",
+      message: skippedLine(item),
+      fix: "fix the frontmatter, or exclude the directory in skill-repository.yaml",
+    });
+  }
 }
 
 function isWritable(dir: string): boolean {

@@ -64,8 +64,49 @@ export interface DiscoverOptions {
   exclude?: string[];
   /** Max recursion depth; 0 means use the default cap. */
   maxDepth?: number;
-  /** Called for each SKILL.md that exists but fails validation. */
-  onInvalid?: (skillFile: string, reason: string) => void;
+}
+
+/**
+ * A SKILL.md that discovery refused to treat as a skill. The file exists; what
+ * makes it unusable is its content or its name.
+ */
+export interface InvalidSkill {
+  /** Absolute path of the SKILL.md itself. */
+  skillFile: string;
+  /** Path of SKILL.md relative to the source root, using forward slashes. */
+  relativePath: string;
+  /** Why the file cannot be used, phrased for the person reading it. */
+  reason: string;
+}
+
+/**
+ * An InvalidSkill that knows which source it came from. Every message shown to
+ * a user goes through `skippedLine`, so a skipped file reads the same wherever
+ * it is reported.
+ */
+export interface SkippedSkill extends InvalidSkill {
+  /** Source alias, or a path when the source has no alias. */
+  source: string;
+}
+
+export interface DiscoveryResult {
+  /** The skills found under the root. */
+  skills: DiscoveredSkill[];
+  /** Every SKILL.md that was skipped, sorted by relative path. */
+  invalid: InvalidSkill[];
+}
+
+/** Tags one source's skipped files, so a report can name where they live. */
+export function skippedFrom(
+  source: string,
+  invalid: readonly InvalidSkill[],
+): SkippedSkill[] {
+  return invalid.map((item) => ({ ...item, source }));
+}
+
+/** The one-line form every report uses: `<source>/<relativePath>: <reason>`. */
+export function skippedLine(item: SkippedSkill): string {
+  return `${item.source}/${item.relativePath}: ${item.reason}`;
 }
 
 /**
@@ -108,23 +149,46 @@ export function parseFrontmatter(content: string): {
   return { frontmatter: parsed as Record<string, unknown>, body };
 }
 
+/** Either a usable skill, or the reason the file cannot be used. */
+export type SkillParse =
+  | { ok: true; skill: DiscoveredSkill }
+  | { ok: false; reason: string };
+
+/** Why `name` cannot be used as a skill name, or null when it can. */
+function nameProblem(name: string): string | null {
+  if (name === "") return "missing `name` in frontmatter";
+  // Checked before the character set: `.` and `..` are made of legal
+  // characters, but either one resolves outside the install directory.
+  if (name.startsWith(".")) return `name "${name}" may not start with a dot`;
+  if (!validSkillName(name)) {
+    return `name "${name}" may only contain lowercase letters, digits, dots, dashes and underscores`;
+  }
+  return null;
+}
+
 /**
- * Parses one SKILL.md into a DiscoveredSkill.
+ * Parses one SKILL.md into a DiscoveredSkill, or reports why it is unusable.
  *
- * Returns null when the file exists but is not a usable skill (no name, no
- * description, or an unsafe name) — the caller decides whether that's worth
- * reporting. Throws only when the frontmatter YAML itself is malformed or the
- * file is unreadable.
+ * A file that cannot be read is reported the same way as one with unusable
+ * frontmatter: discovery keeps walking, and the caller shows every skipped
+ * file together with its reason.
  */
 export function parseSkillMd(
   skillFile: string,
   sourceRoot?: string,
-): DiscoveredSkill | null {
-  const content = fs.readFileSync(skillFile, "utf8");
+): SkillParse {
+  let content: string;
+  try {
+    content = fs.readFileSync(skillFile, "utf8");
+  } catch (err) {
+    return { ok: false, reason: `cannot read SKILL.md: ${(err as Error).message}` };
+  }
+
   const { frontmatter, body } = parseFrontmatter(content);
 
   const name = typeof frontmatter["name"] === "string" ? frontmatter["name"] : "";
-  if (name === "" || !validSkillName(name)) return null;
+  const badName = nameProblem(name);
+  if (badName !== null) return { ok: false, reason: badName };
 
   let description =
     typeof frontmatter["description"] === "string"
@@ -135,23 +199,33 @@ export function parseSkillMd(
     const first = body.trim().split(/\n\s*\n/, 1)[0]?.trim() ?? "";
     if (first !== "") description = first.slice(0, 250);
   }
-  if (description === "") return null;
+  if (description === "") {
+    return {
+      ok: false,
+      reason:
+        "missing `description` in frontmatter, with no opening paragraph in the body to fall back to",
+    };
+  }
 
   const dir = path.dirname(skillFile);
   const root = sourceRoot ?? dir;
 
   return {
-    name,
-    description,
-    dir,
-    skillFile,
-    relativePath: toPosix(path.relative(root, dir)),
-    frontmatter,
+    ok: true,
+    skill: {
+      name,
+      description,
+      dir,
+      skillFile,
+      relativePath: toPosix(path.relative(root, dir)),
+      frontmatter,
+    },
   };
 }
 
 /**
- * Walks `rootDir` and returns every skill it contains.
+ * Walks `rootDir` and returns every skill it contains, plus every SKILL.md it
+ * refused to use and why.
  *
  * The traversal rule that matters: a directory containing SKILL.md is itself a
  * skill, and we do not descend into it. Skills are leaves, not containers —
@@ -161,24 +235,28 @@ export function parseSkillMd(
 export function discoverSkills(
   rootDir: string,
   opts: DiscoverOptions = {},
-): DiscoveredSkill[] {
+): DiscoveryResult {
   const root = path.resolve(rootDir);
   const exclude = (opts.exclude ?? []).map(toPosix);
   const maxDepth = opts.maxDepth && opts.maxDepth > 0 ? opts.maxDepth : DEFAULT_MAX_DEPTH;
 
   const found: DiscoveredSkill[] = [];
+  const invalid: InvalidSkill[] = [];
 
   const walk = (dir: string, depth: number): void => {
     if (depth > maxDepth) return;
 
     const skillFile = path.join(dir, "SKILL.md");
     if (fs.existsSync(skillFile)) {
-      try {
-        const skill = parseSkillMd(skillFile, root);
-        if (skill) found.push(skill);
-        else opts.onInvalid?.(skillFile, "missing or invalid name/description");
-      } catch (err) {
-        opts.onInvalid?.(skillFile, (err as Error).message);
+      const parsed = parseSkillMd(skillFile, root);
+      if (parsed.ok) {
+        found.push(parsed.skill);
+      } else {
+        invalid.push({
+          skillFile,
+          relativePath: toPosix(path.relative(root, skillFile)),
+          reason: parsed.reason,
+        });
       }
       return; // A skill is a leaf.
     }
@@ -206,16 +284,8 @@ export function discoverSkills(
 
   walk(root, 0);
   found.sort((a, b) => a.name.localeCompare(b.name));
-  return found;
-}
-
-/** Looks up a single skill by name within a source root. */
-export function findSkill(
-  rootDir: string,
-  name: string,
-  opts: DiscoverOptions = {},
-): DiscoveredSkill | undefined {
-  return discoverSkills(rootDir, opts).find((s) => s.name === name);
+  invalid.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+  return { skills: found, invalid };
 }
 
 /**

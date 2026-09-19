@@ -166,6 +166,24 @@ your own working copy, is outside that rule and is left alone.
 That's the whole model: no ref-counting, no ownership table. "Is this link
 spm's?" is answered by asking whether its target lives in the source cache.
 
+## When a SKILL.md can't be used
+
+A `SKILL.md` is only a skill when its `name` works as a path segment
+(lowercase letters, digits, dots, dashes and underscores, not starting with a
+dot) and it carries a `description`, either in frontmatter or as the opening
+paragraph of the body. Anything else is **skipped**, and skipping is never
+silent:
+
+- every command that discovers skills prints each skipped file and its reason
+  to stderr, then exits non-zero. The install itself still runs, so the usable
+  part of a repository stays available
+- `spm source add` does not report success for a directory that exposes no
+  usable skill at all
+- `spm doctor` lists every skipped file as an `error`
+
+Those lines go to stderr, so `--json` output on stdout stays parseable and
+`--quiet` still explains why a command failed.
+
 ## Development
 
 ```bash

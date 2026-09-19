@@ -1,9 +1,15 @@
 import type { Command } from "commander";
-import { discoverSkills, type DiscoveredSkill } from "../../core/discover.js";
+import {
+  discoverSkills,
+  skippedFrom,
+  type DiscoveredSkill,
+  type SkippedSkill,
+} from "../../core/discover.js";
 import { readRepoManifest } from "../../core/repo-manifest.js";
 import { listSources } from "../../core/source.js";
 import { bold, dim, heading, info } from "../../log.js";
 import type { GlobalOptions } from "../context.js";
+import { failOnSkippedSkills } from "../report.js";
 
 interface FindOptions extends GlobalOptions {
   source?: string;
@@ -34,15 +40,17 @@ async function findCommand(query: string, opts: FindOptions): Promise<void> {
 
   const needle = query.trim().toLowerCase();
   const hits: { alias: string; skill: DiscoveredSkill }[] = [];
+  const skipped: SkippedSkill[] = [];
 
   for (const source of sources) {
     if (opts.source !== undefined && source.alias !== opts.source) continue;
 
     const repo = readRepoManifest(source.path);
-    const skills = discoverSkills(source.path, {
+    const { skills, invalid } = discoverSkills(source.path, {
       exclude: repo.exclude,
       maxDepth: repo.maxDepth,
     });
+    skipped.push(...skippedFrom(source.alias, invalid));
 
     for (const skill of skills) {
       if (needle !== "" && !matches(skill, needle)) continue;
@@ -63,11 +71,13 @@ async function findCommand(query: string, opts: FindOptions): Promise<void> {
         2,
       )}\n`,
     );
+    failOnSkippedSkills(skipped);
     return;
   }
 
   if (hits.length === 0) {
     info(dim(needle === "" ? "no skills found" : `no skills match "${query}"`));
+    failOnSkippedSkills(skipped);
     return;
   }
 
@@ -80,6 +90,8 @@ async function findCommand(query: string, opts: FindOptions): Promise<void> {
       `  ${bold(hit.skill.name.padEnd(width))}  ${dim(hit.alias)}  ${description}\n`,
     );
   }
+
+  failOnSkippedSkills(skipped);
 }
 
 function matches(skill: DiscoveredSkill, needle: string): boolean {

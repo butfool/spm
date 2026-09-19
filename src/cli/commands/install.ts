@@ -2,7 +2,7 @@ import type { Command } from "commander";
 import { installDirsFor, installSkills } from "../../core/install.js";
 import { dim, heading, info, skip, success, warn } from "../../log.js";
 import { displayPath, loadManifest, reconcile, scopeFrom, type GlobalOptions } from "../context.js";
-import { report } from "../report.js";
+import { failOnSkippedSkills, report } from "../report.js";
 
 interface InstallOptions extends GlobalOptions {
   force?: boolean;
@@ -48,7 +48,7 @@ async function installCommand(specs: string[], opts: InstallOptions): Promise<vo
     return;
   }
 
-  const { targets } = await reconcile(manifest, scope, {
+  const { targets, skipped } = await reconcile(manifest, scope, {
     register: !opts.frozen,
     force: opts.force ?? false,
   });
@@ -57,6 +57,7 @@ async function installCommand(specs: string[], opts: InstallOptions): Promise<vo
 
   if (opts.frozen) {
     reportFrozen(targets, manifest, scope);
+    failOnSkippedSkills(skipped);
     return;
   }
 
@@ -69,10 +70,11 @@ async function installCommand(specs: string[], opts: InstallOptions): Promise<vo
 
   if (targets.length === 0 && result.removed.length === 0) {
     info(dim("skills.yaml declares no skills"));
-    return;
+  } else {
+    report(result.links, result.removed, targets.length, installDirs, scope.manifestDir);
   }
 
-  report(result.links, result.removed, targets.length, installDirs, scope.manifestDir);
+  failOnSkippedSkills(skipped);
 }
 
 /** `--frozen` renders the same view as doctor, but scoped to one manifest. */

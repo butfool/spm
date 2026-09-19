@@ -3,7 +3,14 @@ import path from "node:path";
 import { globalManifestPath, isInside, spmHome } from "../config.js";
 import { SpmError } from "../errors.js";
 import { isDirectory, canonical } from "../fsutil.js";
-import { discoverSkills, type DiscoveredSkill, type DiscoverOptions } from "./discover.js";
+import {
+  discoverSkills,
+  skippedFrom,
+  skippedLine,
+  type DiscoveredSkill,
+  type DiscoverOptions,
+  type SkippedSkill,
+} from "./discover.js";
 import type { Manifest, SkillEntry, SourceDecl } from "./manifest.js";
 import { readRepoManifest } from "./repo-manifest.js";
 import {
@@ -152,7 +159,7 @@ async function resolvePathSpec(spec: string, ctx: ResolveContext): Promise<Sourc
   // A subdirectory of a source we already have. Registering it would duplicate
   // the skills it contains, so point at the source that already covers it.
   if (existing !== null) {
-    const inner = discoverSkills(abs, discoverOptionsFor(existing.root));
+    const inner = discoverSkills(abs, discoverOptionsFor(existing.root)).skills;
     throw new SpmError(
       `${abs} is inside the already-registered source "${existing.alias}"`,
       inner.length === 1
@@ -298,11 +305,14 @@ async function resolveBareSkillSpec(
   ctx: ResolveContext,
 ): Promise<SourceSelection> {
   const matches: SourceSelection[] = [];
+  const skipped: SkippedSkill[] = [];
 
   for (const source of await listSources()) {
     const opts = discoverOptionsFor(source.path);
-    const found = discoverSkills(source.path, opts).some((s) => s.name === name);
-    if (found) {
+    const { skills, invalid } = discoverSkills(source.path, opts);
+    skipped.push(...skippedFrom(source.alias, invalid));
+
+    if (skills.some((s) => s.name === name)) {
       matches.push({
         alias: source.alias,
         root: source.path,
@@ -317,7 +327,12 @@ async function resolveBareSkillSpec(
   if (matches.length === 0) {
     throw new SpmError(
       `no skill named "${name}" in any registered source`,
-      "Run `spm source list` to see what's registered, or `spm find <query>` to search.",
+      [
+        "Run `spm source list` to see what's registered, or `spm find <query>` to search.",
+        ...(skipped.length > 0
+          ? ["Skipped while looking:", ...skipped.map(skippedLine)]
+          : []),
+      ].join("\n  "),
     );
   }
 
@@ -409,22 +424,68 @@ export interface SkillTarget {
   label: string;
 }
 
-/** Expands selections into individual skills, surfacing missing ones. */
-export function expandSelections(selections: SourceSelection[]): SkillTarget[] {
+/**
+ * Raised when a selection cannot be turned into skills.
+ *
+ * It carries the SKILL.md files discovery skipped, so a caller such as
+ * `spm doctor` can explain why an entry came up empty instead of reporting a
+ * bare "not found".
+ */
+export class SkillResolutionError extends SpmError {
+  readonly skipped: SkippedSkill[];
+
+  constructor(message: string, hint: string | undefined, skipped: SkippedSkill[]) {
+    super(message, hint);
+    this.name = "SkillResolutionError";
+    this.skipped = skipped;
+  }
+}
+
+export interface ExpansionResult {
+  /** The skills the caller should act on. */
+  targets: SkillTarget[];
+  /** Every SKILL.md discovery refused, across all selections. */
+  skipped: SkippedSkill[];
+}
+
+/**
+ * Expands selections into individual skills.
+ *
+ * A selection that offers no usable skill stops the whole expansion, because
+ * the manifest would otherwise gain an entry that provides nothing. A
+ * selection that does resolve returns the files it skipped, and the caller
+ * decides how to report them.
+ */
+export function expandSelections(selections: SourceSelection[]): ExpansionResult {
   const targets: SkillTarget[] = [];
+  const skipped: SkippedSkill[] = [];
+  const seenSkipped = new Set<string>();
   const byName = new Map<string, SkillTarget>();
 
   for (const selection of selections) {
     const opts = discoverOptionsFor(selection.root);
-    const available = discoverSkills(selection.root, opts);
+    const { skills: available, invalid } = discoverSkills(selection.root, opts);
+
+    // The same source can be covered by several declarations; report each
+    // skipped file once.
+    const own = skippedFrom(selection.alias ?? selection.label, invalid);
+    for (const item of own) {
+      if (seenSkipped.has(item.skillFile)) continue;
+      seenSkipped.add(item.skillFile);
+      skipped.push(item);
+    }
+    const skippedLines = own.map(skippedLine);
 
     let chosen: DiscoveredSkill[];
     if (selection.skills === "*") {
       chosen = available;
       if (chosen.length === 0) {
-        throw new SpmError(
-          `${selection.label} contains no skills`,
-          `Nothing with a SKILL.md was found under ${selection.root}.`,
+        throw new SkillResolutionError(
+          `${selection.label} contains no usable skills`,
+          skippedLines.length > 0
+            ? ["Every SKILL.md under it was skipped:", ...skippedLines].join("\n  ")
+            : `Nothing with a SKILL.md was found under ${selection.root}.`,
+          skipped,
         );
       }
     } else {
@@ -432,11 +493,16 @@ export function expandSelections(selections: SourceSelection[]): SkillTarget[] {
       for (const wanted of selection.skills) {
         const found = available.find((s) => s.name === wanted);
         if (!found) {
-          throw new SpmError(
-            `skill "${wanted}" not found in ${selection.label}`,
+          const hints = [
             available.length > 0
               ? `Available: ${available.map((s) => s.name).join(", ")}`
-              : `No skills found under ${selection.root}.`,
+              : `No usable SKILL.md was found under ${selection.root}.`,
+          ];
+          if (skippedLines.length > 0) hints.push("Skipped:", ...skippedLines);
+          throw new SkillResolutionError(
+            `skill "${wanted}" not found in ${selection.label}`,
+            hints.join("\n  "),
+            skipped,
           );
         }
         chosen.push(found);
@@ -466,7 +532,7 @@ export function expandSelections(selections: SourceSelection[]): SkillTarget[] {
   }
 
   targets.sort((a, b) => a.name.localeCompare(b.name));
-  return targets;
+  return { targets, skipped };
 }
 
 function discoverOptionsFor(root: string): DiscoverOptions {

@@ -3,6 +3,7 @@ import type { Command } from "commander";
 import { installDirsFor, inspectTargets } from "../../core/install.js";
 import { dim, heading, info, warn } from "../../log.js";
 import { displayPath, loadManifest, scopeFrom, type GlobalOptions } from "../context.js";
+import { failOnSkippedSkills } from "../report.js";
 
 export function registerListCommand(program: Command): void {
   program
@@ -25,7 +26,9 @@ export function registerListCommand(program: Command): void {
       }
 
       const { expandSelections, resolveManifestEntries } = await import("../../core/resolve.js");
-      const targets = expandSelections(await resolveManifestEntries(manifest, { register: false }));
+      const { targets, skipped } = expandSelections(
+        await resolveManifestEntries(manifest, { register: false }),
+      );
       const states = inspectTargets(targets, manifest, scope);
 
       if (opts.json) {
@@ -44,6 +47,7 @@ export function registerListCommand(program: Command): void {
             2,
           )}\n`,
         );
+        failOnSkippedSkills(skipped);
         return;
       }
 
@@ -67,6 +71,8 @@ export function registerListCommand(program: Command): void {
         info("");
         warn(`${broken.length} skill(s) are not linked correctly — run \`spm doctor\``);
       }
+
+      failOnSkippedSkills(skipped);
     });
 }
 

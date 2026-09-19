@@ -8,11 +8,12 @@ import {
   projectScope,
   resolveManifestEntries,
   resolveSpec,
+  SkillResolutionError,
   type Scope,
 } from "../src/core/resolve.js";
 import { registerLocal, sourcePath } from "../src/core/source.js";
 import type { SpmError } from "../src/errors.js";
-import { clearHome, entries, tmpdir, useTempHome, writeSkill } from "./helpers.js";
+import { clearHome, entries, tmpdir, useTempHome, writeSkill, writeSkillFile } from "./helpers.js";
 
 let home: string;
 let repo: string;
@@ -40,7 +41,9 @@ async function setup(
 }
 
 async function link(manifest: Manifest): Promise<ReturnType<typeof installSkills>> {
-  const targets = expandSelections(await resolveManifestEntries(manifest, { register: true }));
+  const { targets } = expandSelections(
+    await resolveManifestEntries(manifest, { register: true }),
+  );
   return installSkills(targets, manifest, scope, { prune: true });
 }
 
@@ -140,7 +143,9 @@ describe("install", () => {
     fs.mkdirSync(path.join(project, ".agents/skills/alpha"), { recursive: true });
     fs.writeFileSync(path.join(project, ".agents/skills/alpha/junk"), "x");
 
-    const targets = expandSelections(await resolveManifestEntries(manifest, { register: true }));
+    const { targets } = expandSelections(
+      await resolveManifestEntries(manifest, { register: true }),
+    );
     const result = installSkills(targets, manifest, scope, { force: true, prune: true });
 
     expect(result.links.find((l) => l.skillName === "alpha")!.action).toBe("replaced");
@@ -165,7 +170,9 @@ describe("install", () => {
 describe("inspectTargets", () => {
   it("reports ok, missing, and foreign states per install directory", async () => {
     const manifest = await setup([".agents/skills", ".claude/skills"]);
-    const targets = expandSelections(await resolveManifestEntries(manifest, { register: true }));
+    const { targets } = expandSelections(
+      await resolveManifestEntries(manifest, { register: true }),
+    );
 
     await link(manifest);
     fs.unlinkSync(path.join(project, ".claude/skills/beta"));
@@ -315,6 +322,42 @@ describe("expandSelections", () => {
     await expect(
       resolveManifestEntries(manifest, { register: true }).then(expandSelections),
     ).rejects.toThrow(/provided by two sources/);
+  });
+
+  it("returns the usable skills and reports the skipped files", async () => {
+    const manifest = await setup();
+    writeSkillFile(repo, "broken", "---\nname: Broken\ndescription: x\n---\n");
+
+    const { targets, skipped } = expandSelections(
+      await resolveManifestEntries(manifest, { register: true }),
+    );
+
+    expect(targets.map((t) => t.name)).toEqual(["alpha", "beta"]);
+    expect(skipped.map((s) => `${s.source}/${s.relativePath}`)).toEqual([
+      "fixture/broken/SKILL.md",
+    ]);
+    expect(skipped[0]!.reason).toMatch(/may only contain lowercase letters/);
+  });
+
+  it("carries the skipped files on the error when a selection resolves to nothing", async () => {
+    const onlyInvalid = tmpdir("spm-invalid-only");
+    writeSkillFile(onlyInvalid, "broken", "---\nname: Broken\ndescription: x\n---\n");
+    registerLocal(onlyInvalid, "broken-source");
+
+    const manifest: Manifest = {
+      installDirs: [],
+      sources: { "broken-source": { path: onlyInvalid } },
+      skills: ["broken-source/*"],
+    };
+
+    const run = resolveManifestEntries(manifest, { register: true }).then(expandSelections);
+
+    await expect(run).rejects.toThrow(/broken-source\/\* contains no usable skills/);
+    await run.catch((err: SkillResolutionError) => {
+      expect(err).toBeInstanceOf(SkillResolutionError);
+      expect(err.skipped.map((s) => s.relativePath)).toEqual(["broken/SKILL.md"]);
+      expect(err.hint).toMatch(/broken\/SKILL\.md/);
+    });
   });
 });
 

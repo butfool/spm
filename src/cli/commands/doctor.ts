@@ -39,10 +39,11 @@ export function registerDoctorCommand(program: Command): void {
       if (!opts.fix) {
         info("");
         info(dim("run `spm doctor --fix` to apply what spm can repair"));
+        failOnInvalidSkills(report.issues);
         return;
       }
 
-      await applyFix(manifest, scope);
+      failOnInvalidSkills(await applyFix(manifest, scope));
     });
 }
 
@@ -55,7 +56,7 @@ export function registerDoctorCommand(program: Command): void {
 async function applyFix(
   manifest: Parameters<typeof installSkills>[1],
   scope: ReturnType<typeof scopeFrom>,
-): Promise<void> {
+): Promise<Issue[]> {
   info("");
   heading("applying fixes");
 
@@ -87,6 +88,22 @@ async function applyFix(
   } else {
     warn(`${after.issues.length} issue(s) remain — see above`);
   }
+  return after.issues;
+}
+
+/**
+ * Fails the command when a SKILL.md could not be used.
+ *
+ * This is the one doctor finding that also decides the exit code: the file has
+ * to be fixed by hand, so a run that found one is not a healthy run. The other
+ * issue classes keep the exit behaviour they had.
+ */
+function failOnInvalidSkills(issues: readonly Issue[]): void {
+  const invalid = issues.filter((i) => i.kind === "invalid_skill");
+  if (invalid.length === 0) return;
+  throw new Error(
+    `${invalid.length} SKILL.md file${invalid.length === 1 ? "" : "s"} skipped — see above`,
+  );
 }
 
 export type { Issue };
