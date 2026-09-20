@@ -27,7 +27,6 @@ export function registerConfigCommand(program: Command): void {
         globalManifest: globalManifestPath(),
         sourcesDir: sourcesDir(settings),
         installDirs: settings.installDirs,
-        defaultRef: settings.defaultRef,
       };
 
       if (opts.json) {
@@ -42,7 +41,6 @@ export function registerConfigCommand(program: Command): void {
       info(`  ${dim("manifest".padEnd(width))} ${displayPath(resolved.globalManifest)}`);
       info(`  ${dim("sources".padEnd(width))} ${displayPath(resolved.sourcesDir)}`);
       info(`  ${dim("installDirs".padEnd(width))} ${resolved.installDirs.join(", ")}`);
-      info(`  ${dim("defaultRef".padEnd(width))} ${resolved.defaultRef}`);
 
       if (!fs.existsSync(settingsPath())) {
         info("");

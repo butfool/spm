@@ -1,27 +1,35 @@
 import type { Command } from "commander";
+import { parseCoordinate } from "../../core/coordinate.js";
 import { installDirsFor, installSkills } from "../../core/install.js";
 import {
   addSkillEntry,
-  upsertSource,
+  upsertRepository,
   writeManifest,
   type Manifest,
-  type SourceDecl,
 } from "../../core/manifest.js";
-import { resolveSpec, type SourceSelection, type Scope } from "../../core/resolve.js";
+import {
+  expandSelections,
+  resolveManifestEntries,
+  resolveSpec,
+  type SourceSelection,
+  type Scope,
+} from "../../core/resolve.js";
 import { dim, info } from "../../log.js";
-import { loadManifest, scopeFrom, type GlobalOptions } from "../context.js";
+import { loadManifest, resolveContext, scopeFrom, type GlobalOptions } from "../context.js";
 import { failOnSkippedSkills, report } from "../report.js";
 
 interface AddOptions extends GlobalOptions {
   force?: boolean;
   prune?: boolean;
+  name?: string;
 }
 
 export function registerAddCommand(program: Command): void {
   program
     .command("add")
     .description("declare skills in skills.yaml and install them")
-    .argument("<specs...>", "paths, aliases, or github repos")
+    .argument("<specs...>", "a coordinate, a local directory, or a skill name")
+    .option("-n, --name <name>", "name to register a local directory under")
     .option("-f, --force", "overwrite entries that aren't symlinks owned by spm")
     .option("--no-prune", "keep links that skills.yaml no longer declares")
     .action(async (specs: string[], opts: AddOptions, command: Command) => {
@@ -49,11 +57,14 @@ export async function runAdd(
   const selections: SourceSelection[] = [];
   for (const spec of specs) {
     selections.push(
-      await resolveSpec(spec, {
-        manifest,
-        register: true,
-        force: opts.force ?? false,
-      }),
+      await resolveSpec(
+        spec,
+        resolveContext(manifest, scope, {
+          register: true,
+          force: opts.force ?? false,
+          name: opts.name,
+        }),
+      ),
     );
   }
 
@@ -63,9 +74,10 @@ export async function runAdd(
     changed = persistSelection(staged, selection) || changed;
   }
 
-  const { expandSelections, resolveManifestEntries } = await import("../../core/resolve.js");
   const { targets, skipped } = expandSelections(
     await resolveManifestEntries(staged, {
+      manifestDir: scope.manifestDir,
+      global: scope.kind === "global",
       register: true,
       force: opts.force ?? false,
     }),
@@ -98,16 +110,26 @@ export async function runAdd(
 }
 
 /**
- * Writes one resolved selection into the manifest: the source declaration
- * (when it isn't self-contained) plus the skill entry.
+ * Writes one resolved selection into the manifest: the local repository
+ * declaration, when this scope doesn't already have one, plus the coordinate.
+ *
+ * A github repository writes nothing but the coordinate — `owner/name` is its
+ * identity, so there is no path to record and nothing to bootstrap.
  */
-export function persistSelection(manifest: Manifest, selection: SourceSelection): boolean {
+export function persistSelection(
+  manifest: Manifest,
+  selection: SourceSelection,
+): boolean {
   let changed = false;
 
-  if (selection.alias !== null && selection.decl !== null) {
-    changed = upsertSource(manifest, selection.alias, selection.decl as SourceDecl) || changed;
+  if (selection.declaration !== null) {
+    changed =
+      upsertRepository(manifest, selection.declaration.name, {
+        type: "local",
+        path: selection.declaration.path,
+      }) || changed;
   }
 
-  changed = addSkillEntry(manifest, selection.entry) || changed;
+  changed = addSkillEntry(manifest, parseCoordinate(selection.entry)) || changed;
   return changed;
 }

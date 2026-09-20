@@ -35,27 +35,18 @@ export function isGitAvailable(): boolean {
   return true; // Resolved lazily; a missing git surfaces as SpmError from git().
 }
 
-/** Shallow-clones `owner/name` at `ref` into `dest`. */
-export async function clone(
-  repo: string,
-  dest: string,
-  ref: string,
-): Promise<void> {
-  await git([
-    "clone",
-    "--depth",
-    "1",
-    "--branch",
-    ref,
-    "--single-branch",
-    githubUrl(repo),
-    dest,
-  ]);
+/**
+ * Shallow-clones `owner/name` into `dest`, following the remote's default
+ * branch. No ref is pinned: a SKILL.md repository has nothing to resolve, and
+ * the default branch is the one its author keeps current.
+ */
+export async function clone(repo: string, dest: string): Promise<void> {
+  await git(["clone", "--depth", "1", "--single-branch", githubUrl(repo), dest]);
 }
 
-/** Fetches and fast-forwards the checkout in `dir` to the remote `ref`. */
-export async function pull(dir: string, ref: string): Promise<void> {
-  await git(["fetch", "--depth", "1", "origin", ref], dir);
+/** Fetches and fast-forwards the checkout in `dir` to the remote default branch. */
+export async function pull(dir: string): Promise<void> {
+  await git(["fetch", "--depth", "1", "origin", "HEAD"], dir);
   await git(["checkout", "--force", "FETCH_HEAD"], dir);
 }
 

@@ -132,8 +132,8 @@ function removeEntry(p: string): void {
 }
 
 /**
- * Removes links in each install directory that point into the spm sources
- * tree but aren't declared by this manifest any more.
+ * Removes links in each install directory that point into the source cache
+ * but aren't declared by this manifest any more.
  *
  * The "points into the sources tree" test is what makes this safe: a link the
  * user made by hand to their own working copy is left alone, because spm did
@@ -196,7 +196,8 @@ export function uninstallSkills(
 export interface SkillState {
   name: string;
   skillDir: string;
-  sourceAlias: string | null;
+  /** The repository it comes from, as `local:name` or `github:owner/repo`. */
+  source: string;
   /** One entry per install dir: whether the link is present and correct. */
   dirs: { dir: string; linkPath: string; state: "ok" | "missing" | "wrong" | "foreign" }[];
 }
@@ -212,7 +213,7 @@ export function inspectTargets(
   return targets.map((target) => ({
     name: target.name,
     skillDir: target.skillDir,
-    sourceAlias: target.sourceAlias,
+    source: target.source,
     dirs: installDirs.map((dir) => {
       const linkPath = path.join(dir, target.name);
       if (!exists(linkPath)) return { dir, linkPath, state: "missing" as const };

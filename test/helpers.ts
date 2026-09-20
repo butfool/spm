@@ -31,12 +31,17 @@ export function writeSkillFile(root: string, relDir: string, content: string): s
 }
 
 /**
- * Points SPM_HOME at a fresh directory for the duration of a test, so nothing
- * touches the developer's real ~/.config/spm.
+ * Points SPM_HOME and HOME at a fresh directory for the duration of a test, so
+ * nothing touches the developer's real ~/.config/spm or ~/.agents/skills.
+ *
+ * HOME matters as well: the global scope treats $HOME as the project root, so
+ * `spm add -g` would otherwise link into the real home directory.
  */
 export function useTempHome(): { home: string; sources: string } {
   const home = tmpdir("spm-home");
+  savedHome = process.env["HOME"];
   process.env["SPM_HOME"] = home;
+  process.env["HOME"] = home;
   const sources = path.join(home, "sources");
   fs.mkdirSync(sources, { recursive: true });
   return { home, sources };
@@ -44,7 +49,11 @@ export function useTempHome(): { home: string; sources: string } {
 
 export function clearHome(): void {
   delete process.env["SPM_HOME"];
+  if (savedHome === undefined) delete process.env["HOME"];
+  else process.env["HOME"] = savedHome;
 }
+
+let savedHome: string | undefined;
 
 /** Lists directory entries, sorted, hiding dotfiles. */
 export function entries(dir: string): string[] {

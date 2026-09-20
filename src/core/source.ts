@@ -1,271 +1,263 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
-import { expandPath, readSettings, sourcesDir } from "../config.js";
+import { sourcesDir } from "../config.js";
 import { SpmError } from "../errors.js";
-import { exists, isDirectory, isSymlink, readLink } from "../fsutil.js";
+import { canonical, exists, isDirectory, readLink } from "../fsutil.js";
+import { validGithubRepository, validRepositoryName } from "./coordinate.js";
 import * as git from "./git.js";
-import type { SourceDecl } from "./manifest.js";
 import { readRepoName } from "./repo-manifest.js";
 
 export type SourceKind = "local" | "github";
 
+/**
+ * A repository the machine can install from. It lives in one of two places
+ * under the source cache; nothing else about it is recorded.
+ */
 export interface RegisteredSource {
-  alias: string;
-  /** Absolute path of the entry inside the spm sources directory. */
-  path: string;
   kind: SourceKind;
-  /** For local sources: where the symlink points. */
+  /** A local repository name, or `owner/repo` for a github repository. */
+  id: string;
+  /** Absolute path of the cache entry. */
+  path: string;
+  /** Local repositories: what the symlink points at. */
   target: string | null;
-  /** Short commit SHA for github sources. */
+  /** Github repositories: the checked-out commit. */
   commit: string | null;
 }
 
-/** Where a source with `alias` is stored inside SPM_HOME/sources. */
-export function sourcePath(alias: string): string {
-  return path.join(sourcesDir(), alias);
+/** `<SPM_HOME>/sources/local`: one symlink per registered local repository. */
+export function localCacheDir(): string {
+  return path.join(sourcesDir(), "local");
 }
 
-export function isRegistered(alias: string): boolean {
-  return exists(sourcePath(alias));
+/** `<SPM_HOME>/sources/github`: one clone per `owner/repo`. */
+export function githubCacheDir(): string {
+  return path.join(sourcesDir(), "github");
 }
 
-/** Classifies a single entry in the sources directory. */
-export async function describeSource(alias: string): Promise<RegisteredSource | null> {
-  const p = sourcePath(alias);
-  if (!exists(p)) return null;
-  const target = readLink(p);
-
-  if (target !== null) {
-    return { alias, path: p, kind: "local", target, commit: null };
-  }
-  if (fs.existsSync(path.join(p, ".git"))) {
-    return {
-      alias,
-      path: p,
-      kind: "github",
-      target: null,
-      commit: await git.currentCommit(p),
-    };
-  }
-  return { alias, path: p, kind: "local", target: p, commit: null };
+export function localSourcePath(name: string): string {
+  return path.join(localCacheDir(), name);
 }
 
-/** Every registered source, sorted by alias. */
+export function githubSourcePath(repo: string): string {
+  return path.join(githubCacheDir(), repo);
+}
+
+/** The cache path of a repository, whichever kind it is. */
+export function sourcePath(kind: SourceKind, id: string): string {
+  return kind === "local" ? localSourcePath(id) : githubSourcePath(id);
+}
+
+export function describeLocal(name: string): RegisteredSource | null {
+  const entry = localSourcePath(name);
+  if (!exists(entry)) return null;
+  const target = readLink(entry);
+  return {
+    kind: "local",
+    id: name,
+    path: entry,
+    target: target ?? entry,
+    commit: null,
+  };
+}
+
+export async function describeGithub(repo: string): Promise<RegisteredSource | null> {
+  const entry = githubSourcePath(repo);
+  if (!exists(entry)) return null;
+  return {
+    kind: "github",
+    id: repo,
+    path: entry,
+    target: null,
+    commit: await git.currentCommit(entry),
+  };
+}
+
+/** Every repository the machine has registered, sorted by kind then id. */
 export async function listSources(): Promise<RegisteredSource[]> {
-  const dir = sourcesDir();
-  if (!exists(dir)) return [];
-
-  const names = fs
-    .readdirSync(dir)
-    .filter((n) => !n.startsWith(".") && n !== "tmp");
-
   const out: RegisteredSource[] = [];
-  for (const alias of names) {
-    const source = await describeSource(alias);
+
+  for (const name of readEntries(localCacheDir())) {
+    const source = describeLocal(name);
     if (source) out.push(source);
   }
-  return out.sort((a, b) => a.alias.localeCompare(b.alias));
+
+  for (const owner of readEntries(githubCacheDir())) {
+    for (const repo of readEntries(path.join(githubCacheDir(), owner))) {
+      const source = await describeGithub(`${owner}/${repo}`);
+      if (source) out.push(source);
+    }
+  }
+
+  return out.sort((a, b) => a.kind.localeCompare(b.kind) || a.id.localeCompare(b.id));
 }
 
-/** Derives the default alias for a local repository from its path. */
-export function defaultLocalAlias(absPath: string): string {
+/** The default name for a local repository: its own declaration, else the directory name. */
+export function defaultRepositoryName(absPath: string): string {
   return readRepoName(absPath) ?? path.basename(absPath);
 }
 
 /**
- * Registers a local directory by symlinking it into the sources directory.
- * The source directory itself is never modified — that's the whole point of
- * registering rather than copying.
+ * Registers a local directory by symlinking it into the source cache. The
+ * directory itself is never modified — that's the whole point of registering
+ * rather than copying, since a change in the repository is picked up at once.
  */
 export function registerLocal(
   inputPath: string,
-  alias?: string,
+  name: string,
   force = false,
-): { alias: string; status: "created" | "unchanged" | "rebound" } {
+): { name: string; status: "created" | "unchanged" | "rebound" } {
   const abs = path.resolve(inputPath);
 
   if (!isDirectory(abs)) {
     throw new SpmError(`not a directory: ${abs}`);
   }
-
-  const resolvedAlias = alias ?? defaultLocalAlias(abs);
-  validateAlias(resolvedAlias);
-
-  const linkPath = sourcePath(resolvedAlias);
-  fs.mkdirSync(sourcesDir(), { recursive: true });
-
-  if (exists(linkPath)) {
-    const current = readLink(linkPath);
-    if (current === abs) return { alias: resolvedAlias, status: "unchanged" };
-
-    if (!force) {
-      throw new SpmError(
-        `source "${resolvedAlias}" is already registered`,
-        current !== null
-          ? `Currently points at ${current}. Re-run with --force to repoint it.`
-          : `Currently a clone at ${linkPath}. Remove it first or pick another --alias.`,
-      );
-    }
-
-    if (current !== null) fs.unlinkSync(linkPath);
-    else fs.rmSync(linkPath, { recursive: true, force: true });
-    fs.symlinkSync(abs, linkPath);
-    return { alias: resolvedAlias, status: "rebound" };
+  if (!validRepositoryName(name)) {
+    throw new SpmError(
+      `"${name}" is not a usable repository name`,
+      "Names may contain letters, digits, dots, dashes and underscores, may not start with a dot, and may not be local or github.",
+    );
   }
 
-  fs.symlinkSync(abs, linkPath);
-  return { alias: resolvedAlias, status: "created" };
+  const entry = localSourcePath(name);
+  fs.mkdirSync(localCacheDir(), { recursive: true });
+
+  if (exists(entry)) {
+    const current = readLink(entry);
+    if (current !== null && canonical(current) === canonical(abs)) {
+      return { name, status: "unchanged" };
+    }
+    if (!force) {
+      throw new SpmError(
+        `local repository "${name}" is already registered`,
+        current !== null
+          ? `Currently points at ${current}. Re-run with --force to repoint it.`
+          : `${entry} is in the way. Remove it or pick another name.`,
+      );
+    }
+    fs.rmSync(entry, { recursive: true, force: true });
+    fs.symlinkSync(abs, entry);
+    return { name, status: "rebound" };
+  }
+
+  fs.symlinkSync(abs, entry);
+  return { name, status: "created" };
 }
 
 /**
- * Registers a github repository by cloning it into the sources directory.
+ * Makes sure the github repository is cloned, and returns its cache entry.
  *
- * The clone lands in a temporary directory first so we can read the repo's
- * own `skill-repository.yaml` and honour its declared name — the same alias
- * rule local sources use. The temp dir is renamed into place only once the
- * final alias is known.
+ * The clone lands in a temporary directory and is renamed into place, so a
+ * failed clone never leaves a half-populated repository behind. No ref is
+ * involved: the clone follows the remote's default branch, and `spm update`
+ * re-fetches that same branch.
  */
-export async function registerGithub(
+export async function ensureGithub(
   repo: string,
-  ref?: string,
-  alias?: string,
   force = false,
-): Promise<{ alias: string; status: "created" | "unchanged" | "rebound"; ref: string }> {
-  if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) {
+): Promise<RegisteredSource> {
+  if (!validGithubRepository(repo)) {
     throw new SpmError(
       `"${repo}" is not a valid github repository`,
       "Expected the form owner/name.",
     );
   }
 
-  const resolvedRef = ref ?? readSettings().defaultRef;
-  const defaultAlias = alias ?? repo.split("/")[1]!;
-
-  const existing = sourcePath(defaultAlias);
-  if (exists(existing) && isDirectory(existing) && !isSymlink(existing)) {
-    if (!alias && !force) {
-      // Already cloned under the default alias: treat as an idempotent re-add
-      // and just make sure it's up to date.
-      return { alias: defaultAlias, status: "unchanged", ref: resolvedRef };
+  const entry = githubSourcePath(repo);
+  const existing = await describeGithub(repo);
+  if (existing) {
+    if (force && !exists(path.join(entry, ".git"))) {
+      throw new SpmError(
+        `${entry} is not a git checkout`,
+        "Remove it and re-run `spm i`.",
+      );
     }
+    return existing;
   }
 
-  fs.mkdirSync(sourcesDir(), { recursive: true });
+  fs.mkdirSync(githubCacheDir(), { recursive: true });
   const tmp = path.join(
-    sourcesDir(),
+    githubCacheDir(),
     `.tmp-${process.pid}-${Date.now().toString(36)}`,
   );
 
   try {
-    await git.clone(repo, tmp, resolvedRef);
-
-    const resolvedAlias = alias ?? readRepoName(tmp) ?? defaultAlias;
-    validateAlias(resolvedAlias);
-
-    const dest = sourcePath(resolvedAlias);
-    let status: "created" | "unchanged" | "rebound" = "created";
-
-    if (exists(dest)) {
-      const isClone = isDirectory(dest) && !isSymlink(dest);
-      if (!force) {
-        throw new SpmError(
-          `source "${resolvedAlias}" is already registered`,
-          `Remove it first (spm source remove ${resolvedAlias}) or re-run with --force.`,
-        );
-      }
-      if (isClone) {
-        await git.pull(dest, resolvedRef);
-        fs.rmSync(tmp, { recursive: true, force: true });
-        return { alias: resolvedAlias, status: "unchanged", ref: resolvedRef };
-      }
-      fs.unlinkSync(dest);
-      status = "rebound";
-    }
-
-    fs.renameSync(tmp, dest);
-    return { alias: resolvedAlias, status, ref: resolvedRef };
+    await git.clone(repo, tmp);
+    if (exists(entry)) fs.rmSync(entry, { recursive: true, force: true });
+    fs.mkdirSync(path.dirname(entry), { recursive: true });
+    fs.renameSync(tmp, entry);
   } finally {
     if (exists(tmp)) fs.rmSync(tmp, { recursive: true, force: true });
   }
-}
 
-/**
- * Ensures the source described by `decl` exists locally under `alias`,
- * registering it on first use. This is what makes a fresh checkout able to
- * run `spm i` without a manual `spm source add`.
- */
-export async function ensureDeclaredSource(
-  alias: string,
-  decl: SourceDecl,
-  opts: { force?: boolean } = {},
-): Promise<RegisteredSource> {
-  const existing = await describeSource(alias);
-  if (existing) return existing;
-
-  if (decl.path !== undefined) {
-    const abs = expandPath(decl.path, os.homedir());
-    registerLocal(abs, alias, opts.force ?? false);
-  } else if (decl.repo !== undefined) {
-    await registerGithub(decl.repo, decl.ref, alias, opts.force ?? false);
-  } else {
-    throw new SpmError(`source "${alias}" declares neither path nor repo`);
-  }
-
-  const registered = await describeSource(alias);
+  const registered = await describeGithub(repo);
   if (!registered) {
-    throw new SpmError(`failed to register source "${alias}"`);
+    throw new SpmError(`failed to clone ${repo}`);
   }
   return registered;
 }
 
-/**
- * Reconstructs the manifest declaration for an already-registered source.
- *
- * This is what lets a manifest stay self-contained: when a skill is added via
- * a bare name or an alias that was never declared in `sources:`, we can still
- * write down where the source actually came from, so a fresh clone of the
- * project can bootstrap itself.
- */
-export async function sourceDeclFor(source: RegisteredSource): Promise<SourceDecl> {
-  if (source.kind === "local" && source.target !== null) {
-    return { path: source.target };
-  }
+/** Re-fetches a github repository, following its default branch. */
+export async function refreshGithub(repo: string): Promise<"updated" | "missing" | "local"> {
+  const source = await describeGithub(repo);
+  if (!source) return "missing";
+  if (!exists(path.join(source.path, ".git"))) return "local";
 
-  const url = await git.remoteUrl(source.path);
-  const repo = url === null ? null : git.parseGithubRepo(url);
-  return repo !== null ? { repo } : { path: source.path };
-}
-
-/** Unregisters a source. Returns false when it wasn't registered. */export function removeSource(alias: string): boolean {
-  const p = sourcePath(alias);
-  if (!exists(p)) return false;
-  if (isSymlink(p)) fs.unlinkSync(p);
-  else fs.rmSync(p, { recursive: true, force: true });
-  return true;
-}
-
-/** Updates an immutable-anyway source to its remote tip (github only). */
-export async function refreshSource(
-  alias: string,
-  ref?: string,
-): Promise<"updated" | "local" | "missing"> {
-  const p = sourcePath(alias);
-  if (!exists(p)) return "missing";
-  if (isSymlink(p)) return "local";
-
-  await git.pull(p, ref ?? readSettings().defaultRef);
+  await git.pull(source.path);
   return "updated";
 }
 
-function validateAlias(alias: string): void {
-  if (!/^[A-Za-z0-9._-]+$/.test(alias)) {
-    throw new SpmError(
-      `"${alias}" is not a usable source alias`,
-      "Aliases may contain letters, digits, dots, dashes and underscores.",
-    );
+/** Unregisters a local repository. Returns false when it wasn't registered. */
+export function removeLocalSource(name: string): boolean {
+  const entry = localSourcePath(name);
+  if (!exists(entry)) return false;
+  fs.rmSync(entry, { recursive: true, force: true });
+  return true;
+}
+
+/** Removes a github clone. Returns false when it wasn't there. */
+export function removeGithubSource(repo: string): boolean {
+  const entry = githubSourcePath(repo);
+  if (!exists(entry)) return false;
+  fs.rmSync(entry, { recursive: true, force: true });
+  return true;
+}
+
+/** The registered local repository whose directory is exactly `abs`, if any. */
+export function findLocalByPath(abs: string): RegisteredSource | null {
+  const real = canonical(abs);
+  for (const name of readEntries(localCacheDir())) {
+    const source = describeLocal(name);
+    if (!source || source.target === null) continue;
+    if (canonical(source.target) === real) return source;
   }
-  if (alias.startsWith(".")) {
-    throw new SpmError(`"${alias}" is not a usable source alias`, "Aliases may not start with a dot.");
+  return null;
+}
+
+/** True when any registered source root contains `abs`. */
+export function findEnclosingLocal(
+  abs: string,
+): { source: RegisteredSource; root: string } | null {
+  const real = canonical(abs);
+  for (const name of readEntries(localCacheDir())) {
+    const source = describeLocal(name);
+    if (!source || source.target === null) continue;
+    const root = canonical(source.target);
+    const rel = path.relative(root, real);
+    if (rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel)) {
+      return { source, root };
+    }
+  }
+  return null;
+}
+
+function readEntries(dir: string): string[] {
+  try {
+    return fs
+      .readdirSync(dir)
+      .filter((name) => !name.startsWith("."))
+      .sort();
+  } catch {
+    return [];
   }
 }

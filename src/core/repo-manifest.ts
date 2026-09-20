@@ -15,7 +15,7 @@ export const REPO_MANIFEST_FILENAME = "skill-repository.yaml";
  * author's problem, not the tool's — a name is just a name.
  */
 export const RepoManifestSchema = z.object({
-  /** Display name; also the default alias when the repo is registered. */
+  /** Display name; also the default name when the directory is registered. */
   name: z.string().min(1).optional(),
   /** Path prefixes (repo-relative) excluded from skill discovery. */
   exclude: z.array(z.string()).default([]),
@@ -68,5 +68,5 @@ export function writeRepoManifest(root: string, manifest: RepoManifest): void {
   if (manifest.exclude.length > 0) out["exclude"] = manifest.exclude;
   if (manifest.maxDepth > 0) out["maxDepth"] = manifest.maxDepth;
 
-  fs.writeFileSync(file, stringifyYaml(out), "utf8");
+  fs.writeFileSync(file, stringifyYaml(out, { lineWidth: 0 }), "utf8");
 }

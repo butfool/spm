@@ -1,37 +1,71 @@
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { parseCoordinate } from "../src/core/coordinate.js";
 import {
   addSkillEntry,
-  entrySourceKey,
-  entryToString,
+  manifestCoordinates,
   manifestPath,
   readManifest,
   removeSkillEntry,
+  removeSkillEntries,
+  upsertRepository,
   writeManifest,
+  type Manifest,
 } from "../src/core/manifest.js";
 import { readRepoManifest } from "../src/core/repo-manifest.js";
 import { tmpdir } from "./helpers.js";
 
+const empty = (): Manifest => ({ installDirs: [], repositories: {}, skills: [] });
+
 describe("manifest round-trip", () => {
-  it("preserves sources, skills, and installDirs", () => {
+  it("preserves repositories, skills, and installDirs", () => {
     const dir = tmpdir("spm-man");
     writeManifest(dir, {
       installDirs: [".agents/skills", ".claude/skills"],
-      sources: { local: { path: "/tmp/x" }, remote: { repo: "a/b", ref: "v1" } },
-      skills: ["local/*", "remote/skill"],
+      repositories: {
+        mine: { type: "local", path: "/tmp/x" },
+        other: { type: "local", path: "~/other" },
+      },
+      skills: ["local:mine:*", "github:a/b:pdf-fill"],
     });
 
     const back = readManifest(dir);
     expect(back).not.toBeNull();
     expect(back!.installDirs).toEqual([".agents/skills", ".claude/skills"]);
-    expect(back!.sources["local"]).toEqual({ path: "/tmp/x" });
-    expect(back!.sources["remote"]).toEqual({ repo: "a/b", ref: "v1" });
-    expect(back!.skills).toEqual(["local/*", "remote/skill"]);
+    expect(back!.repositories["mine"]).toEqual({ type: "local", path: "/tmp/x" });
+    expect(back!.repositories["other"]).toEqual({ type: "local", path: "~/other" });
+    expect(back!.skills).toEqual(["github:a/b:pdf-fill", "local:mine:*"]);
+  });
+
+  it("parses the declared coordinates through the same reader everything else uses", () => {
+    const dir = tmpdir("spm-man");
+    writeManifest(dir, {
+      installDirs: [],
+      repositories: {},
+      skills: ["local:mine:*", "github:a/b:pdf"],
+    });
+
+    expect(manifestCoordinates(readManifest(dir)!).map((c) => c.skill)).toEqual(["pdf", "*"]);
   });
 
   it("returns null when the file is absent", () => {
     expect(readManifest(tmpdir("spm-man"))).toBeNull();
+  });
+
+  it("keeps a long path on one line instead of folding it", () => {
+    const dir = tmpdir("spm-man");
+    const longPath =
+      "/Users/someone/Library/Application Support/tool/plugins/managed/kimi-cu/skills";
+
+    writeManifest(dir, {
+      installDirs: [],
+      repositories: { "kimi-cu": { type: "local", path: longPath } },
+      skills: [],
+    });
+
+    expect(fs.readFileSync(manifestPath(dir), "utf8")).toContain(longPath);
+    expect(readManifest(dir)!.repositories["kimi-cu"]!.path).toBe(longPath);
   });
 
   it("writes deterministic output so diffs stay small", () => {
@@ -40,13 +74,13 @@ describe("manifest round-trip", () => {
 
     writeManifest(a, {
       installDirs: [],
-      sources: { zeta: { path: "/z" }, alpha: { path: "/a" } },
-      skills: ["zeta/two", "alpha/one"],
+      repositories: { zeta: { type: "local", path: "/z" }, alpha: { type: "local", path: "/a" } },
+      skills: ["local:zeta:two", "local:alpha:one"],
     });
     writeManifest(b, {
       installDirs: [],
-      sources: { alpha: { path: "/a" }, zeta: { path: "/z" } },
-      skills: ["alpha/one", "zeta/two"],
+      repositories: { alpha: { type: "local", path: "/a" }, zeta: { type: "local", path: "/z" } },
+      skills: ["local:alpha:one", "local:zeta:two"],
     });
 
     expect(fs.readFileSync(manifestPath(a), "utf8")).toBe(
@@ -56,83 +90,125 @@ describe("manifest round-trip", () => {
 
   it("omits empty sections rather than writing them as null", () => {
     const dir = tmpdir("spm-man");
-    writeManifest(dir, { installDirs: [], sources: {}, skills: [] });
+    writeManifest(dir, empty());
     expect(fs.readFileSync(manifestPath(dir), "utf8").trim()).toBe("{}");
   });
 
-  it("rejects a source with both path and repo", () => {
+  it("rejects a repository entry carrying a type other than local", () => {
     const dir = tmpdir("spm-man");
     fs.writeFileSync(
       manifestPath(dir),
-      "sources:\n  bad:\n    path: /x\n    repo: a/b\n",
+      "repositories:\n  remote:\n    type: github\n    path: /x\n",
       "utf8",
     );
-    expect(() => readManifest(dir)).toThrow(/path.*repo|exactly one/i);
+    expect(() => readManifest(dir)).toThrow(/invalid/);
+  });
+
+  it("rejects a repository entry with no path", () => {
+    const dir = tmpdir("spm-man");
+    fs.writeFileSync(manifestPath(dir), "repositories:\n  mine:\n    type: local\n", "utf8");
+    expect(() => readManifest(dir)).toThrow(/invalid/);
+  });
+
+  it("rejects a repository name that would escape the source cache", () => {
+    const dir = tmpdir("spm-man");
+    fs.writeFileSync(
+      manifestPath(dir),
+      'repositories:\n  "../evil":\n    type: local\n    path: /x\n',
+      "utf8",
+    );
+    expect(() => readManifest(dir)).toThrow(/unusable repository name/);
+  });
+
+  it("rejects an unknown top-level key, naming it", () => {
+    // The old format's `sources:` block: stripping it silently would drop
+    // every repository declaration the user wrote.
+    const dir = tmpdir("spm-man");
+    fs.writeFileSync(manifestPath(dir), "sources:\n  mine:\n    path: /x\n", "utf8");
+    expect(() => readManifest(dir)).toThrow(/Unrecognized key: "sources"/);
+  });
+
+  it("rejects a skill entry that is not a coordinate", () => {
+    const dir = tmpdir("spm-man");
+    fs.writeFileSync(manifestPath(dir), "skills:\n  - mine:pdf-fill\n", "utf8");
+    expect(() => readManifest(dir)).toThrow(
+      /invalid skill coordinate "mine:pdf-fill": 2 segments instead of 3/,
+    );
+  });
+
+  it("rejects a coordinate whose type mismatches its repository", () => {
+    const dir = tmpdir("spm-man");
+    fs.writeFileSync(manifestPath(dir), "skills:\n  - github:mine:pdf\n", "utf8");
+    expect(() => readManifest(dir)).toThrow(/not a github repository — expected owner\/name/);
   });
 });
 
 describe("addSkillEntry", () => {
-  const base = () => ({ installDirs: [], sources: {}, skills: [] });
-
-  it("does not duplicate an identical entry", () => {
-    const m = base();
-    expect(addSkillEntry(m, "a/x")).toBe(true);
-    expect(addSkillEntry(m, "a/x")).toBe(false);
-    expect(m.skills).toEqual(["a/x"]);
+  it("does not duplicate an identical coordinate", () => {
+    const m = empty();
+    expect(addSkillEntry(m, parseCoordinate("local:a:x"))).toBe(true);
+    expect(addSkillEntry(m, parseCoordinate("local:a:x"))).toBe(false);
+    expect(m.skills).toEqual(["local:a:x"]);
   });
 
-  it("skips a skill already covered by a whole-source entry", () => {
-    const m = base();
-    addSkillEntry(m, "a/*");
-    expect(addSkillEntry(m, "a/x")).toBe(false);
-    expect(m.skills).toEqual(["a/*"]);
+  it("skips a skill a whole-repository entry already covers", () => {
+    const m = empty();
+    addSkillEntry(m, parseCoordinate("local:a:*"));
+    expect(addSkillEntry(m, parseCoordinate("local:a:x"))).toBe(false);
+    expect(m.skills).toEqual(["local:a:*"]);
   });
 
-  it("replaces individual entries when the whole source is added", () => {
-    const m = base();
-    addSkillEntry(m, "a/x");
-    addSkillEntry(m, "a/y");
-    addSkillEntry(m, "b/z");
-    addSkillEntry(m, "a/*");
+  it("replaces individual entries when the whole repository is added", () => {
+    const m = empty();
+    addSkillEntry(m, parseCoordinate("local:a:x"));
+    addSkillEntry(m, parseCoordinate("local:a:y"));
+    addSkillEntry(m, parseCoordinate("local:b:z"));
+    addSkillEntry(m, parseCoordinate("local:a:*"));
 
-    expect(m.skills).toContain("a/*");
-    expect(m.skills).toContain("b/z");
-    expect(m.skills).not.toContain("a/x");
-    expect(m.skills).not.toContain("a/y");
+    expect(m.skills).toContain("local:a:*");
+    expect(m.skills).toContain("local:b:z");
+    expect(m.skills).not.toContain("local:a:x");
+    expect(m.skills).not.toContain("local:a:y");
   });
 
-  it("treats different sources as independent", () => {
-    const m = base();
-    addSkillEntry(m, "a/*");
-    expect(addSkillEntry(m, "b/x")).toBe(true);
-    expect(m.skills).toEqual(["a/*", "b/x"]);
+  it("keeps a local and a github repository of the same name apart", () => {
+    const m = empty();
+    addSkillEntry(m, parseCoordinate("local:b:*"));
+    expect(addSkillEntry(m, parseCoordinate("github:a/b:x"))).toBe(true);
+    expect(m.skills).toEqual(["local:b:*", "github:a/b:x"]);
   });
 });
 
 describe("removeSkillEntry", () => {
   it("reports whether it changed anything", () => {
-    const m = { installDirs: [], sources: {}, skills: ["a/x", "b/y"] };
-    expect(removeSkillEntry(m, "a/x")).toBe(true);
-    expect(removeSkillEntry(m, "a/x")).toBe(false);
-    expect(m.skills).toEqual(["b/y"]);
+    const m: Manifest = {
+      installDirs: [],
+      repositories: {},
+      skills: ["local:a:x", "local:b:y"],
+    };
+    expect(removeSkillEntry(m, parseCoordinate("local:a:x"))).toBe(true);
+    expect(removeSkillEntry(m, parseCoordinate("local:a:x"))).toBe(false);
+    expect(m.skills).toEqual(["local:b:y"]);
+  });
+
+  it("removes every entry a predicate accepts", () => {
+    const m: Manifest = {
+      installDirs: [],
+      repositories: {},
+      skills: ["local:a:x", "local:a:y", "local:b:z"],
+    };
+    expect(removeSkillEntries(m, (entry) => entry.startsWith("local:a:"))).toBe(2);
+    expect(m.skills).toEqual(["local:b:z"]);
   });
 });
 
-describe("entry helpers", () => {
-  it("keys alias entries by their alias", () => {
-    expect(entrySourceKey("repo/skill")).toBe("alias:repo");
-    expect(entrySourceKey("repo/*")).toBe("alias:repo");
-  });
-
-  it("keys object entries by their origin", () => {
-    expect(entrySourceKey({ repo: "a/b" })).toBe("repo:a/b");
-    expect(entrySourceKey({ repo: "a/b", ref: "v1" })).toBe("repo:a/b#v1");
-    expect(entrySourceKey({ path: "/x/y" })).toBe("path:/x/y");
-  });
-
-  it("renders object entries back to a readable form", () => {
-    expect(entryToString({ repo: "a/b", ref: "v1", skill: "s" })).toBe("a/b#v1:s");
-    expect(entryToString({ path: "/x" })).toBe("/x");
+describe("upsertRepository", () => {
+  it("adds, updates, and reports no-op writes", () => {
+    const m = empty();
+    expect(upsertRepository(m, "mine", { type: "local", path: "/x" })).toBe(true);
+    expect(upsertRepository(m, "mine", { type: "local", path: "/x" })).toBe(false);
+    expect(upsertRepository(m, "mine", { type: "local", path: "/y" })).toBe(true);
+    expect(m.repositories["mine"]).toEqual({ type: "local", path: "/y" });
   });
 });
 

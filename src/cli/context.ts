@@ -6,6 +6,7 @@ import {
   globalScope,
   projectScope,
   resolveManifestEntries,
+  type ResolveContext,
   type Scope,
   type SkillTarget,
 } from "../core/resolve.js";
@@ -43,7 +44,7 @@ export function loadManifest(
           : "Run `spm init` to create one.",
       );
     }
-    return { manifest: { installDirs: [], sources: {}, skills: [] }, existed: false };
+    return { manifest: { installDirs: [], repositories: {}, skills: [] }, existed: false };
   }
 
   const manifest = readManifest(scope.manifestDir);
@@ -51,6 +52,25 @@ export function loadManifest(
     throw new SpmError(`no skills.yaml in ${scope.manifestDir}`);
   }
   return { manifest, existed: true };
+}
+
+/**
+ * The resolution context for a scope: the manifest whose declarations come
+ * first, and the directory its relative repository paths resolve against.
+ */
+export function resolveContext(
+  manifest: Manifest,
+  scope: Scope,
+  opts: { register: boolean; force?: boolean | undefined; name?: string | undefined },
+): ResolveContext {
+  return {
+    manifest,
+    manifestDir: scope.manifestDir,
+    global: scope.kind === "global",
+    register: opts.register,
+    force: opts.force ?? false,
+    name: opts.name,
+  };
 }
 
 /**
@@ -68,6 +88,8 @@ export async function reconcile(
   skipped: SkippedSkill[];
 }> {
   const selections = await resolveManifestEntries(manifest, {
+    manifestDir: scope.manifestDir,
+    global: scope.kind === "global",
     register: opts.register,
     force: opts.force,
   });

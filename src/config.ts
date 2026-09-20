@@ -18,8 +18,6 @@ export const SettingsSchema = z.object({
   installDirs: z.array(z.string().min(1)).default([".agents/skills"]),
   /** Where registered sources live, relative to SPM_HOME. */
   sourcesDir: z.string().min(1).default("sources"),
-  /** Default git ref for github sources that don't declare their own. */
-  defaultRef: z.string().min(1).default("main"),
 });
 
 export type Settings = z.infer<typeof SettingsSchema>;
@@ -76,7 +74,7 @@ export function readSettings(): Settings {
 
 export function writeSettings(settings: Settings): void {
   ensureHomeDirs();
-  fs.writeFileSync(settingsPath(), stringifyYaml(settings), "utf8");
+  fs.writeFileSync(settingsPath(), stringifyYaml(settings, { lineWidth: 0 }), "utf8");
 }
 
 /** Creates SPM_HOME and the sources directory if they don't exist yet. */

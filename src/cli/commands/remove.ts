@@ -1,13 +1,27 @@
 import type { Command } from "commander";
+import { tryParseCoordinate, type Coordinate } from "../../core/coordinate.js";
+import { discoverSkills } from "../../core/discover.js";
 import { installDirsFor, installSkills } from "../../core/install.js";
-import { entryToString, writeManifest, type Manifest, type SkillEntry } from "../../core/manifest.js";
 import {
+  removeSkillEntries,
+  writeManifest,
+  type Manifest,
+} from "../../core/manifest.js";
+import { readRepoManifest } from "../../core/repo-manifest.js";
+import { repositoryLayers, type RepositoryLayers } from "../../core/registry.js";
+import {
+  coordinateForPath,
+  coordinateMatches,
   expandSelections,
-  isBareSpec,
+  isKnownLocal,
+  isPathLike,
+  parseSpecTarget,
+  registeredRoot,
   resolveManifestEntries,
-  specToEntryKey,
   type Scope,
+  type SpecTarget,
 } from "../../core/resolve.js";
+import { SpmError } from "../../errors.js";
 import { dim, info, warn } from "../../log.js";
 import { loadManifest, scopeFrom, type GlobalOptions } from "../context.js";
 import { failOnSkippedSkills, report } from "../report.js";
@@ -17,7 +31,7 @@ export function registerRemoveCommand(program: Command): void {
     .command("remove")
     .aliases(["rm", "un", "uninstall"])
     .description("remove skills from skills.yaml and unlink them")
-    .argument("<specs...>", "skill specifiers to remove")
+    .argument("<specs...>", "coordinates or skill names to remove")
     .action(async (specs: string[], opts: GlobalOptions, command: Command) => {
       const merged = { ...opts, ...(command.optsWithGlobals() as GlobalOptions) };
       const scope = scopeFrom(merged);
@@ -37,45 +51,48 @@ export async function runRemove(
   scope: Scope,
   manifest: Manifest,
 ): Promise<void> {
-  const removed: SkillEntry[] = [];
+  const layers = repositoryLayers(manifest, scope.manifestDir, scope.kind === "global");
   const missing: string[] = [];
+  let removed = 0;
 
   for (const spec of specs) {
-    const matched = matchEntries(manifest, spec);
-    if (matched.length === 0) {
+    const target = targetFor(spec, layers);
+    if (target === null) {
       missing.push(spec);
       continue;
     }
-    for (const entry of matched) {
-      manifest.skills = manifest.skills.filter((e) => e !== entry);
-      removed.push(entry);
+    const count = removeSkillEntries(manifest, (entry) => coordinateMatches(entry, target));
+    if (count === 0) {
+      missing.push(spec);
+      continue;
     }
+    removed += count;
   }
 
   for (const spec of missing) {
-    const covered = await findCoveringEntry(manifest, spec);
-    if (covered !== null) {
-      warn(`"${spec}" comes from the whole-source entry "${covered}" — it isn't listed separately`);
-      info(
-        dim(
-          `  Declare the specific skills you want instead of \`${covered}\`, or leave it as is.`,
-        ),
-      );
-    } else {
-      warn(`"${spec}" is not declared in skills.yaml`);
-    }
+    reportMissing(manifest, spec);
   }
 
-  if (removed.length === 0) {
-    return;
-  }
+  if (removed === 0) return;
+
+  // A project-level declaration nothing refers to any more is dropped, so the
+  // name is free again. The machine-level registry is never touched here:
+  // that belongs to `spm repository`.
+  const dropped = scope.kind === "project" ? pruneUnusedDeclarations(manifest) : [];
 
   writeManifest(scope.manifestDir, manifest);
   info(dim(`updated ${scope.manifestDir}/skills.yaml`));
+  for (const name of dropped) {
+    info(dim(`dropped the unused local repository declaration "${name}"`));
+  }
 
   // Re-resolve what remains, then let the install pass prune the rest.
   const { targets, skipped } = expandSelections(
-    await resolveManifestEntries(manifest, { register: false }),
+    await resolveManifestEntries(manifest, {
+      manifestDir: scope.manifestDir,
+      global: scope.kind === "global",
+      register: false,
+    }),
   );
 
   const result = installSkills(targets, manifest, scope, { prune: true });
@@ -91,47 +108,86 @@ export async function runRemove(
   failOnSkippedSkills(skipped);
 }
 
-/** Finds the manifest entries a specifier refers to. */
-function matchEntries(manifest: Manifest, spec: string): SkillEntry[] {
-  const key = specToEntryKey(spec, manifest);
+/**
+ * Drops every project-level repository declaration no coordinate names any
+ * more. Returns the names that went.
+ */
+function pruneUnusedDeclarations(manifest: Manifest): string[] {
+  const used = new Set(
+    manifest.skills
+      .map((entry) => tryParseCoordinate(entry))
+      .filter((coordinate): coordinate is Coordinate => coordinate?.type === "local")
+      .map((coordinate) => coordinate.repository),
+  );
 
-  if (!isBareSpec(spec, manifest)) {
-    return manifest.skills.filter((e) => entryToString(e) === key);
+  const dropped: string[] = [];
+  for (const name of Object.keys(manifest.repositories)) {
+    if (used.has(name)) continue;
+    delete manifest.repositories[name];
+    dropped.push(name);
   }
-
-  // A bare name matches any declaration that names that skill, in either the
-  // `alias/skill` or the `repo:skill` form.
-  return manifest.skills.filter((entry) => {
-    const text = entryToString(entry);
-    return text === key || text.endsWith(`/${key}`) || text.endsWith(`:${key}`);
-  });
+  return dropped;
 }
 
 /**
- * When a spec matches nothing, works out whether a whole-source entry is
- * nonetheless providing it — otherwise `spm rm <skill>` fails with "not
- * declared", which is technically true but reads as a bug.
+ * What a removal specifier names. A specifier naming a repository this
+ * manifest never mentions is not an error — it simply matches nothing.
  */
-async function findCoveringEntry(
-  manifest: Manifest,
-  spec: string,
-): Promise<string | null> {
-  const name = spec.trim().split("/").pop();
+function targetFor(spec: string, layers: RepositoryLayers): SpecTarget | null {
+  const trimmed = spec.trim();
+  if (trimmed === "") return null;
+
+  try {
+    if (isPathLike(trimmed)) {
+      const coordinate = coordinateForPath(trimmed);
+      return coordinate === null ? null : { kind: "coordinate", coordinate };
+    }
+    return parseSpecTarget(trimmed, (name) => isKnownLocal(name, layers));
+  } catch (err) {
+    if (err instanceof SpmError) return null;
+    throw err;
+  }
+}
+
+function reportMissing(manifest: Manifest, spec: string): void {
+  const covering = findCoveringEntry(manifest, spec);
+  if (covering === null) {
+    warn(`"${spec}" is not declared in skills.yaml`);
+    return;
+  }
+  warn(`"${spec}" comes from the whole-repository entry "${covering}" — it isn't listed separately`);
+  info(`  ${dim(`Declare the individual skills instead of \`${covering}\`, or leave it as is.`)}`);
+}
+
+/**
+ * When a specifier matches nothing, works out whether a whole-repository
+ * entry is nonetheless providing it — otherwise `spm rm <skill>` fails with
+ * "not declared", which is technically true but reads as a bug.
+ */
+function findCoveringEntry(manifest: Manifest, spec: string): string | null {
+  const name = spec.trim().split(":").pop();
   if (name === undefined || name === "" || name === "*") return null;
 
-  for (const entry of manifest.skills) {
-    const key = entryToString(entry);
-    if (!key.endsWith("/*")) continue;
+  const wholeRepositories = manifest.skills
+    .map((entry) => tryParseCoordinate(entry))
+    .filter(
+      (coordinate): coordinate is Coordinate =>
+        coordinate !== null && coordinate.skill === "*",
+    );
 
-    try {
-      const provided = expandSelections(
-        await resolveManifestEntries({ ...manifest, skills: [entry] }, { register: false }),
-      );
-      if (provided.targets.some((t) => t.name === name)) return key;
-    } catch {
-      // A source is unreachable; don't guess about what it would provide.
-      continue;
+  for (const coordinate of wholeRepositories) {
+    const root = registeredRoot(coordinate);
+    if (root === null) continue;
+
+    const repo = readRepoManifest(root);
+    const { skills } = discoverSkills(root, {
+      exclude: repo.exclude,
+      maxDepth: repo.maxDepth,
+    });
+    if (skills.some((skill) => skill.name === name)) {
+      return `${coordinate.type}:${coordinate.repository}:*`;
     }
   }
+
   return null;
 }

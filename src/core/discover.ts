@@ -85,7 +85,7 @@ export interface InvalidSkill {
  * it is reported.
  */
 export interface SkippedSkill extends InvalidSkill {
-  /** Source alias, or a path when the source has no alias. */
+  /** The repository it came from, as `local:name` or `github:owner/repo`. */
   source: string;
 }
 

@@ -1,8 +1,20 @@
 import os from "node:os";
 import path from "node:path";
-import { globalManifestPath, isInside, spmHome } from "../config.js";
+import { expandPath, spmHome } from "../config.js";
 import { SpmError } from "../errors.js";
-import { isDirectory, canonical } from "../fsutil.js";
+import { canonical, exists, isDirectory, readLink } from "../fsutil.js";
+import {
+  COORDINATE_HINT,
+  WHOLE_REPOSITORY,
+  formatCoordinate,
+  isRepositoryType,
+  namesWholeRepository,
+  parseCoordinate,
+  readCoordinate,
+  tryParseCoordinate,
+  type Coordinate,
+  type RepositoryType,
+} from "./coordinate.js";
 import {
   discoverSkills,
   skippedFrom,
@@ -11,16 +23,20 @@ import {
   type DiscoverOptions,
   type SkippedSkill,
 } from "./discover.js";
-import type { Manifest, SkillEntry, SourceDecl } from "./manifest.js";
+import { manifestPath, type Manifest } from "./manifest.js";
+import { declarationPath, lookupLocalRepository, repositoryLayers, type RepositoryLayers } from "./registry.js";
 import { readRepoManifest } from "./repo-manifest.js";
 import {
-  describeSource,
-  ensureDeclaredSource,
-  isRegistered,
+  defaultRepositoryName,
+  describeGithub,
+  describeLocal,
+  ensureGithub,
+  findEnclosingLocal,
+  findLocalByPath,
+  githubSourcePath,
   listSources,
-  registerGithub,
+  localSourcePath,
   registerLocal,
-  sourceDeclFor,
   sourcePath,
   type RegisteredSource,
 } from "./source.js";
@@ -47,288 +63,334 @@ export function globalScope(): Scope {
 }
 
 export function scopeLabel(scope: Scope): string {
-  return scope.kind === "global" ? globalManifestPath() : path.join(scope.manifestDir, "skills.yaml");
+  return scope.kind === "global"
+    ? manifestPath(spmHome())
+    : manifestPath(scope.manifestDir);
 }
 
 /**
- * A source plus the subset of its skills to install. `skills: "*"` means
- * every skill the source exposes.
+ * A repository plus the subset of its skills to install, together with
+ * everything needed to write the dependency back into a manifest.
  */
 export interface SourceSelection {
-  /** Registered alias, or null for ad-hoc paths/repos. */
-  alias: string | null;
-  /** Absolute path of the source root on disk. */
+  type: RepositoryType;
+  /** A local repository name, or `owner/repo`. */
+  id: string;
+  /** Absolute path of the repository root on disk. */
   root: string;
-  /**
-   * Declaration to record under `sources:` in the manifest. Null when `entry`
-   * is self-contained (the inline `path:`/`repo:` form), in which case no
-   * named alias needs declaring.
-   */
-  decl: SourceDecl | null;
-  /** The manifest entry that reproduces this selection. */
-  entry: SkillEntry;
+  /** The coordinate that reproduces this selection. */
+  entry: string;
   skills: string[] | "*";
-  /** How the user referred to this, for error messages and output. */
+  /** How the repository is named in messages. */
   label: string;
+  /**
+   * The declaration to record next to the dependency, when the repository
+   * isn't declared yet. Null for github repositories, which need no
+   * declaration, and for local ones already declared for this scope.
+   */
+  declaration: { name: string; path: string } | null;
 }
 
 export interface ResolveContext {
-  /** The manifest being edited, so declared aliases resolve before registration. */
+  /** The manifest being edited, so its declarations resolve first. */
   manifest: Manifest | null;
-  /** Register sources on demand (install paths) or require them to exist (read-only paths). */
+  /** Directory holding that manifest, for its relative repository paths. */
+  manifestDir: string;
+  /** Whether that manifest is the global one. */
+  global: boolean;
+  /** Register repositories on demand (install paths) or require them to exist. */
   register: boolean;
-  force?: boolean;
+  /** Repoint an already-registered repository. */
+  force?: boolean | undefined;
+  /** Name to register a local directory under; defaults to its declared name. */
+  name?: string | undefined;
+}
+
+/** What a CLI specifier names, before anything is registered. */
+export type SpecTarget =
+  | { kind: "path"; path: string }
+  | { kind: "skill"; name: string }
+  | { kind: "coordinate"; coordinate: Coordinate };
+
+/** The repository prefix used in messages and JSON output. */
+export function sourceLabel(type: RepositoryType, id: string): string {
+  return `${type}:${id}`;
 }
 
 /**
- * Resolves one CLI specifier into a concrete source selection.
+ * Reads one CLI specifier.
  *
- * Accepted forms, in the order they're recognised:
+ * Accepted forms:
  *
- *   ./path, /abs/path, ~/path   local directory (one skill if it holds a
- *                               SKILL.md itself, otherwise all it contains)
- *   alias/skill, alias/*        a source by alias
- *   owner/repo[#ref]            a github repo, all skills
- *   owner/repo/skill            a github repo, one skill
- *   skill-name                  a skill looked up across all registered sources
+ *   ./path, /abs/path, ~/path           a local directory, registered on the fly
+ *   local:name:skill, local:name:*      a registered local repository
+ *   github:owner/repo:skill             a github repository
+ *   local:name, github:owner/repo       the whole repository
+ *   owner/repo[:skill]                  github shorthand
+ *   name[:skill]                        local shorthand, when `name` is known
+ *   skill-name                          a skill looked up across all repositories
+ *
+ * The type segment can be left out of the shorthand forms, because `owner/repo`
+ * carries a slash a repository name never has, and a name is only accepted as a
+ * repository when this machine already knows it.
  */
+export function parseSpecTarget(
+  spec: string,
+  isKnownLocal: (name: string) => boolean,
+): SpecTarget {
+  const trimmed = spec.trim();
+  if (trimmed === "") throw new SpmError("empty skill specifier");
+
+  if (isPathLike(trimmed)) return { kind: "path", path: trimmed };
+
+  const segments = trimmed.split(":");
+
+  if (segments.length === 1) {
+    const token = segments[0]!;
+    if (token.includes("/")) {
+      return { kind: "coordinate", coordinate: buildCoordinate(trimmed, "github", token, WHOLE_REPOSITORY) };
+    }
+    if (isKnownLocal(token)) {
+      return {
+        kind: "coordinate",
+        coordinate: buildCoordinate(trimmed, "local", token, WHOLE_REPOSITORY),
+      };
+    }
+    return { kind: "skill", name: token };
+  }
+
+  if (segments.length === 2) {
+    const [head, rest] = segments as [string, string];
+
+    if (isRepositoryType(head)) {
+      return { kind: "coordinate", coordinate: buildCoordinate(trimmed, head, rest, WHOLE_REPOSITORY) };
+    }
+    if (head.includes("/")) {
+      return { kind: "coordinate", coordinate: buildCoordinate(trimmed, "github", head, rest) };
+    }
+    if (isKnownLocal(head)) {
+      return { kind: "coordinate", coordinate: buildCoordinate(trimmed, "local", head, rest) };
+    }
+    throw new SpmError(
+      `unknown repository "${head}"`,
+      `${UNKNOWN_LOCAL_HINT(head)} A repository name never contains a slash.`,
+    );
+  }
+
+  if (segments.length === 3) {
+    const [type, repository, skill] = segments as [string, string, string];
+    return { kind: "coordinate", coordinate: buildCoordinate(trimmed, type, repository, skill) };
+  }
+
+  throw new SpmError(
+    `"${trimmed}" is not a usable specifier`,
+    `${COORDINATE_HINT} A local directory is given as a plain path.`,
+  );
+}
+
+const UNKNOWN_LOCAL_HINT = (name: string): string =>
+  `Register it with \`spm repository add <path> --name ${name}\`;`;
+
+function buildCoordinate(
+  text: string,
+  type: string,
+  repository: string,
+  skill: string,
+): Coordinate {
+  const result = readCoordinate(`${type}:${repository}:${skill}`);
+  if (!result.ok) {
+    throw new SpmError(`"${text}" is not a usable specifier: ${result.reason}`, COORDINATE_HINT);
+  }
+  return result.coordinate;
+}
+
+/** Resolves one CLI specifier into a concrete repository selection. */
 export async function resolveSpec(
   spec: string,
   ctx: ResolveContext,
 ): Promise<SourceSelection> {
-  const trimmed = spec.trim();
-  if (trimmed === "") throw new SpmError("empty skill specifier");
+  const layers = repositoryLayers(ctx.manifest, ctx.manifestDir, ctx.global);
+  const target = parseSpecTarget(spec, (name) => isKnownLocal(name, layers));
 
-  if (isPathLike(trimmed)) {
-    return resolvePathSpec(trimmed, ctx);
+  switch (target.kind) {
+    case "path":
+      return resolvePathSpec(target.path, ctx, layers);
+    case "skill":
+      return resolveBareSkillSpec(target.name);
+    case "coordinate":
+      return resolveCoordinate(target.coordinate, ctx, layers);
   }
-
-  const segments = trimmed.split("/");
-
-  // A leading segment that is a known alias wins over github syntax — that's
-  // what lets `my-org/my-repo` work when `my-org` is a registered alias.
-  if (segments.length >= 2 && isKnownAlias(segments[0]!, ctx.manifest)) {
-    return resolveAliasSpec(segments[0]!, segments.slice(1).join("/"), ctx);
-  }
-
-  if (segments.length === 1) {
-    const name = segments[0]!;
-    // A bare word that names a source installs the whole source. This is the
-    // shell-safe spelling of `alias/*`: an unquoted `*` is expanded — or, in
-    // zsh's default `nomatch` mode, rejected — before spm ever sees it.
-    if (isKnownAlias(name, ctx.manifest)) {
-      return resolveAliasSpec(name, "*", ctx);
-    }
-    return resolveBareSkillSpec(name, ctx);
-  }
-
-  return resolveGithubSpec(segments, ctx);
 }
 
-/**
- * Whether `alias` is a source we can resolve: either declared by the manifest
- * being edited, or registered globally.
- */
-export function isKnownAlias(alias: string, manifest: Manifest | null): boolean {
-  if (manifest?.sources[alias] !== undefined) return true;
-  return isRegistered(alias);
+/** Whether `name` is a local repository this machine can resolve. */
+export function isKnownLocal(name: string, layers: RepositoryLayers): boolean {
+  return lookupLocalRepository(name, layers) !== null || describeLocal(name) !== null;
 }
 
-async function resolvePathSpec(spec: string, ctx: ResolveContext): Promise<SourceSelection> {
-  const abs = path.resolve(spec.replace(/^~(?=\/|$)/, os.homedir()));
+async function resolvePathSpec(
+  spec: string,
+  ctx: ResolveContext,
+  layers: RepositoryLayers,
+): Promise<SourceSelection> {
+  const abs = expandPath(spec, process.cwd());
   if (!isDirectory(abs)) {
     throw new SpmError(`no such directory: ${abs}`);
   }
 
-  const existing = await findByRealPath(abs);
-
-  // Already registered under some alias: reuse it rather than registering the
-  // same directory a second time under a new name, which would put every one
-  // of its skills on the manifest twice.
-  if (existing !== null && existing.exact) {
+  const registered = findLocalByPath(abs);
+  if (registered) {
     return {
-      alias: existing.alias,
-      root: sourcePath(existing.alias),
-      decl: ctx.manifest?.sources[existing.alias] ?? (await sourceDeclFor(existing.source)),
-      entry: `${existing.alias}/*`,
+      type: "local",
+      id: registered.id,
+      root: registered.path,
+      entry: `${sourceLabel("local", registered.id)}:${WHOLE_REPOSITORY}`,
       skills: "*",
       label: spec,
+      declaration: declarationFor(registered, layers),
     };
   }
 
-  // A subdirectory of a source we already have. Registering it would duplicate
-  // the skills it contains, so point at the source that already covers it.
-  if (existing !== null) {
-    const inner = discoverSkills(abs, discoverOptionsFor(existing.root)).skills;
+  const enclosing = findEnclosingLocal(abs);
+  if (enclosing) {
+    const inner = discoverSkills(abs, discoverOptionsFor(enclosing.source.path)).skills;
     throw new SpmError(
-      `${abs} is inside the already-registered source "${existing.alias}"`,
+      `${abs} is inside the registered local repository "${enclosing.source.id}"`,
       inner.length === 1
-        ? `Use \`spm add ${existing.alias}/${inner[0]!.name}\` instead.`
-        : `Use \`spm add ${existing.alias}\` for the whole source, or name a skill from it.`,
+        ? `Use \`spm add local:${enclosing.source.id}:${inner[0]!.name}\` instead.`
+        : `Use \`spm add local:${enclosing.source.id}\` for every skill it holds, or name one of them.`,
     );
   }
 
-  const alias = ctx.register
-    ? registerLocal(abs, undefined, ctx.force ?? false).alias
-    : path.basename(abs);
+  const name = ctx.name ?? defaultRepositoryName(abs);
+  const declared = lookupLocalRepository(name, layers);
+  if (declared && canonical(declarationPath(declared)) !== canonical(abs)) {
+    throw new SpmError(
+      `local repository "${name}" already points at ${declared.path}`,
+      `Re-run with \`--name <other-name>\`, or repoint it with \`spm repository add ${spec} --name ${name} --force\`.`,
+    );
+  }
 
-  const root = ctx.register ? sourcePath(alias) : abs;
+  if (ctx.register) {
+    registerLocal(abs, name, ctx.force ?? false);
+  }
+
   return {
-    alias,
-    root,
-    decl: { path: abs },
-    entry: `${alias}/*`,
+    type: "local",
+    id: name,
+    root: ctx.register ? localSourcePath(name) : abs,
+    entry: `${sourceLabel("local", name)}:${WHOLE_REPOSITORY}`,
     skills: "*",
     label: spec,
+    declaration: declared ? null : { name, path: spec },
   };
 }
 
-/**
- * Finds the registered source a directory belongs to: an exact match on the
- * source root, or — when `abs` is a subdirectory of one — that enclosing
- * source, which callers report as an error rather than silently duplicating.
- *
- * Both sides are realpath'd first: a registered local source is a symlink, so
- * comparing the link path against a user-supplied directory never matches.
- */
-async function findByRealPath(
-  abs: string,
-): Promise<{ source: RegisteredSource; alias: string; root: string; exact: boolean } | null> {
-  const real = canonical(abs);
-  for (const source of await listSources()) {
-    const root = canonical(source.path);
-    if (root === real) {
-      return { source, alias: source.alias, root, exact: true };
-    }
-    if (isInside(real, root)) {
-      return { source, alias: source.alias, root, exact: false };
-    }
-  }
-  return null;
+/** The declaration to write for an already-registered local repository. */
+function declarationFor(
+  source: RegisteredSource,
+  layers: RepositoryLayers,
+): { name: string; path: string } | null {
+  if (lookupLocalRepository(source.id, layers) !== null) return null;
+  if (source.target === null) return null;
+  return { name: source.id, path: source.target };
 }
 
-async function resolveAliasSpec(
-  alias: string,
-  rest: string,
+async function resolveCoordinate(
+  coordinate: Coordinate,
   ctx: ResolveContext,
+  layers: RepositoryLayers,
 ): Promise<SourceSelection> {
-  let decl = ctx.manifest?.sources[alias];
+  const skills = namesWholeRepository(coordinate) ? "*" : [coordinate.skill];
 
-  if (!decl && !isRegistered(alias)) {
-    throw new SpmError(
-      `unknown source "${alias}"`,
-      `Register it first: spm source add <path|owner/repo> --alias ${alias}`,
-    );
+  if (coordinate.type === "local") {
+    return resolveLocalCoordinate(coordinate, skills, ctx, layers);
   }
 
-  if (!isRegistered(alias)) {
-    if (!ctx.register) {
+  const registered = await ensureGithubIfAsked(coordinate.repository, ctx);
+  return {
+    type: "github",
+    id: coordinate.repository,
+    root: registered.path,
+    entry: formatCoordinate(coordinate),
+    skills,
+    label: formatCoordinate(coordinate),
+    declaration: null,
+  };
+}
+
+async function resolveLocalCoordinate(
+  coordinate: Coordinate,
+  skills: string[] | "*",
+  ctx: ResolveContext,
+  layers: RepositoryLayers,
+): Promise<SourceSelection> {
+  const name = coordinate.repository;
+  const registered = describeLocal(name);
+  const declared = lookupLocalRepository(name, layers);
+
+  if (!registered) {
+    if (!declared) {
       throw new SpmError(
-        `source "${alias}" is declared but not registered locally`,
-        `Run \`spm i\` to fetch it, or \`spm source add\` explicitly.`,
+        `unknown local repository "${name}"`,
+        UNKNOWN_LOCAL_HINT(name),
       );
     }
-    await ensureDeclaredSource(alias, decl!, { force: ctx.force ?? false });
+    if (!ctx.register) {
+      throw new SpmError(
+        `local repository "${name}" is declared but not registered on this machine`,
+        `Run \`spm i\` to register it, or \`spm repository add ${declared.path} --name ${name}\`.`,
+      );
+    }
+    registerLocal(declarationPath(declared), name, ctx.force ?? false);
   }
 
-  // An alias registered globally but absent from this manifest still needs a
-  // declaration recorded, or a fresh clone couldn't reproduce it.
-  if (!decl) {
-    const source = await describeSource(alias);
-    if (!source) throw new SpmError(`source "${alias}" vanished during resolution`);
-    decl = await sourceDeclFor(source);
-  }
-
-  const root = sourcePath(alias);
-  const skills = rest === "*" ? "*" : rest.split("/").filter(Boolean);
-  if (skills !== "*" && skills.length !== 1) {
-    throw new SpmError(
-      `"${alias}/${rest}" does not name a single skill`,
-      "Use `alias/skill-name` or `alias/*`.",
-    );
+  const source = describeLocal(name);
+  if (!source) {
+    throw new SpmError(`local repository "${name}" vanished while it was being registered`);
   }
 
   return {
-    alias,
-    root,
-    decl,
-    entry: `${alias}/${rest}`,
+    type: "local",
+    id: name,
+    root: source.path,
+    entry: formatCoordinate(coordinate),
     skills,
-    label: `${alias}/${rest}`,
-  };
-}
-
-async function resolveGithubSpec(
-  segments: string[],
-  ctx: ResolveContext,
-): Promise<SourceSelection> {
-  if (segments.length > 3) {
-    throw new SpmError(
-      `"${segments.join("/")}" is not a valid specifier`,
-      "Expected alias/skill, owner/repo, owner/repo/skill, or a local path.",
-    );
-  }
-
-  const [owner, rawRepo, ...rest] = segments;
-  const hashIndex = rawRepo!.indexOf("#");
-  const repoName = hashIndex === -1 ? rawRepo! : rawRepo!.slice(0, hashIndex);
-  const ref = hashIndex === -1 ? undefined : rawRepo!.slice(hashIndex + 1);
-  const repo = `${owner}/${repoName}`;
-
-  if (!ctx.register) {
-    throw new SpmError(
-      `source "${repo}" is not registered`,
-      `Run \`spm source add ${repo}\` first.`,
-    );
-  }
-
-  const result = await registerGithub(repo, ref, undefined, ctx.force ?? false);
-  const skillName = rest[0];
-
-  return {
-    alias: result.alias,
-    root: sourcePath(result.alias),
-    decl: ref !== undefined ? { repo, ref } : { repo },
-    entry: skillName === undefined ? `${result.alias}/*` : `${result.alias}/${skillName}`,
-    skills: skillName === undefined ? "*" : [skillName],
-    label: rest.length > 0 ? `${repo}/${rest.join("/")}` : repo,
+    label: formatCoordinate(coordinate),
+    declaration: declared === null ? declarationFor(source, layers) : null,
   };
 }
 
 /**
- * A bare name with no slash: look it up across every registered source. This
- * is the `npm install lodash` ergonomic — unambiguous finds install, ambiguous
- * ones list the candidates instead of guessing.
+ * A bare name with no repository: look it up across every registered
+ * repository. This is the ergonomic that makes `spm add pdf-fill` work;
+ * an ambiguous name lists the candidates instead of picking one.
  */
-async function resolveBareSkillSpec(
-  name: string,
-  ctx: ResolveContext,
-): Promise<SourceSelection> {
+async function resolveBareSkillSpec(name: string): Promise<SourceSelection> {
   const matches: SourceSelection[] = [];
   const skipped: SkippedSkill[] = [];
 
   for (const source of await listSources()) {
     const opts = discoverOptionsFor(source.path);
     const { skills, invalid } = discoverSkills(source.path, opts);
-    skipped.push(...skippedFrom(source.alias, invalid));
+    skipped.push(...skippedFrom(sourceLabel(source.kind, source.id), invalid));
 
-    if (skills.some((s) => s.name === name)) {
-      matches.push({
-        alias: source.alias,
-        root: source.path,
-        decl: await sourceDeclFor(source),
-        entry: `${source.alias}/${name}`,
-        skills: [name],
-        label: `${source.alias}/${name}`,
-      });
-    }
+    if (!skills.some((skill) => skill.name === name)) continue;
+    matches.push({
+      type: source.kind,
+      id: source.id,
+      root: source.path,
+      entry: `${sourceLabel(source.kind, source.id)}:${name}`,
+      skills: [name],
+      label: `${sourceLabel(source.kind, source.id)}:${name}`,
+      declaration: null,
+    });
   }
 
   if (matches.length === 0) {
     throw new SpmError(
-      `no skill named "${name}" in any registered source`,
+      `no skill named "${name}" in any registered repository`,
       [
-        "Run `spm source list` to see what's registered, or `spm find <query>` to search.",
+        "Run `spm find <query>` to search, or `spm i -g` to register the repositories the global manifest declares.",
         ...(skipped.length > 0
           ? ["Skipped while looking:", ...skipped.map(skippedLine)]
           : []),
@@ -338,77 +400,47 @@ async function resolveBareSkillSpec(
 
   if (matches.length > 1) {
     throw new SpmError(
-      `"${name}" exists in ${matches.length} sources: ${matches.map((m) => m.alias).join(", ")}`,
-      `Disambiguate with one of: ${matches.map((m) => `spm add ${m.alias}/${name}`).join(", ")}`,
+      `"${name}" exists in ${matches.length} repositories: ${matches.map((m) => m.label).join(", ")}`,
+      `Disambiguate with one of: ${matches.map((m) => `spm add ${m.label}`).join(", ")}`,
     );
   }
 
-  void ctx;
   return matches[0]!;
 }
 
-/** Expands manifest entries, registering sources as needed. */
+async function ensureGithubIfAsked(
+  repo: string,
+  ctx: ResolveContext,
+): Promise<RegisteredSource> {
+  if (ctx.register) return ensureGithub(repo, ctx.force ?? false);
+
+  const source = await describeGithub(repo);
+  if (source === null) {
+    throw new SpmError(
+      `github repository "${repo}" is not cloned on this machine`,
+      "Run `spm i` to fetch it.",
+    );
+  }
+  return source;
+}
+
+/** Expands manifest coordinates, registering repositories as needed. */
 export async function resolveManifestEntries(
   manifest: Manifest,
-  ctx: { register: boolean; force?: boolean },
+  ctx: Omit<ResolveContext, "manifest">,
 ): Promise<SourceSelection[]> {
+  const layers = repositoryLayers(manifest, ctx.manifestDir, ctx.global);
   const selections: SourceSelection[] = [];
 
   for (const entry of manifest.skills) {
-    if (typeof entry === "string") {
-      selections.push(
-        await resolveSpec(entry, { manifest, register: ctx.register, force: ctx.force ?? false }),
+    const parsed = tryParseCoordinate(entry);
+    if (parsed === null) {
+      throw new SpmError(
+        `skills.yaml declares an unusable coordinate "${entry}"`,
+        COORDINATE_HINT,
       );
-      continue;
     }
-
-    if (entry.repo !== undefined) {
-      const result = ctx.register
-        ? await registerGithub(entry.repo, entry.ref, undefined, ctx.force ?? false)
-        : null;
-      const alias = result?.alias ?? entry.repo.split("/")[1]!;
-      if (!result && !isRegistered(alias)) {
-        throw new SpmError(
-          `source "${entry.repo}" is not registered`,
-          `Run \`spm i\` to fetch it, or \`spm source add ${entry.repo}\`.`,
-        );
-      }
-      selections.push({
-        alias,
-        root: sourcePath(alias),
-        decl: null,
-        entry,
-        skills: entry.skill !== undefined ? [entry.skill] : "*",
-        label: entry.skill !== undefined ? `${entry.repo}:${entry.skill}` : entry.repo,
-      });
-      continue;
-    }
-
-    if (entry.path !== undefined) {
-      const abs = path.resolve(entry.path.replace(/^~(?=\/|$)/, os.homedir()));
-      if (!isDirectory(abs)) {
-        throw new SpmError(
-          `no such directory: ${abs}`,
-          "Declared by a `path:` entry in skills.yaml.",
-        );
-      }
-      const alias = ctx.register
-        ? registerLocal(abs, undefined, ctx.force ?? false).alias
-        : path.basename(abs);
-      selections.push({
-        alias,
-        root: ctx.register ? sourcePath(alias) : abs,
-        decl: null,
-        entry,
-        skills: entry.skill !== undefined ? [entry.skill] : "*",
-        label: entry.path,
-      });
-      continue;
-    }
-
-    throw new SpmError(
-      `a skills.yaml entry has neither \`path\` nor \`repo\`: ${JSON.stringify(entry)}`,
-    );
+    selections.push(await resolveCoordinate(parsed, { ...ctx, manifest }, layers));
   }
 
   return selections;
@@ -419,7 +451,8 @@ export interface SkillTarget {
   name: string;
   /** Directory to symlink from. */
   skillDir: string;
-  sourceAlias: string | null;
+  /** The repository it comes from, as `local:name` or `github:owner/repo`. */
+  source: string;
   sourceRoot: string;
   label: string;
 }
@@ -463,12 +496,27 @@ export function expandSelections(selections: SourceSelection[]): ExpansionResult
   const byName = new Map<string, SkillTarget>();
 
   for (const selection of selections) {
+    // A repository whose directory is gone is reported once, here, because
+    // this is the only place that still knows which repository it was. The
+    // alternative — a declaration check in `doctor` plus a discovery failure
+    // here — counts one root cause twice.
+    if (!isDirectory(selection.root)) {
+      const target = readLink(selection.root);
+      throw new SkillResolutionError(
+        `${selection.label} is not available: ${target ?? selection.root} is missing`,
+        selection.type === "local"
+          ? `Re-register the local repository with \`spm repository add <path> --name ${selection.id}\`.`
+          : `Run \`spm i\` to fetch ${selection.id} again.`,
+        [],
+      );
+    }
+
     const opts = discoverOptionsFor(selection.root);
     const { skills: available, invalid } = discoverSkills(selection.root, opts);
 
-    // The same source can be covered by several declarations; report each
+    // The same repository can be covered by several declarations; report each
     // skipped file once.
-    const own = skippedFrom(selection.alias ?? selection.label, invalid);
+    const own = skippedFrom(sourceLabel(selection.type, selection.id), invalid);
     for (const item of own) {
       if (seenSkipped.has(item.skillFile)) continue;
       seenSkipped.add(item.skillFile);
@@ -491,11 +539,11 @@ export function expandSelections(selections: SourceSelection[]): ExpansionResult
     } else {
       chosen = [];
       for (const wanted of selection.skills) {
-        const found = available.find((s) => s.name === wanted);
+        const found = available.find((skill) => skill.name === wanted);
         if (!found) {
           const hints = [
             available.length > 0
-              ? `Available: ${available.map((s) => s.name).join(", ")}`
+              ? `Available: ${available.map((skill) => skill.name).join(", ")}`
               : `No usable SKILL.md was found under ${selection.root}.`,
           ];
           if (skippedLines.length > 0) hints.push("Skipped:", ...skippedLines);
@@ -513,7 +561,7 @@ export function expandSelections(selections: SourceSelection[]): ExpansionResult
       const existing = byName.get(skill.name);
       if (existing && existing.sourceRoot !== selection.root) {
         throw new SpmError(
-          `skill "${skill.name}" is provided by two sources`,
+          `skill "${skill.name}" is provided by two repositories`,
           `${existing.label} and ${selection.label}. Remove one declaration from skills.yaml.`,
         );
       }
@@ -522,7 +570,7 @@ export function expandSelections(selections: SourceSelection[]): ExpansionResult
       const target: SkillTarget = {
         name: skill.name,
         skillDir: skill.dir,
-        sourceAlias: selection.alias,
+        source: sourceLabel(selection.type, selection.id),
         sourceRoot: selection.root,
         label: selection.label,
       };
@@ -535,13 +583,46 @@ export function expandSelections(selections: SourceSelection[]): ExpansionResult
   return { targets, skipped };
 }
 
+/** Whether a declared coordinate is the one a parsed specifier names. */
+export function coordinateMatches(entry: string, target: SpecTarget): boolean {
+  const parsed = tryParseCoordinate(entry);
+  if (parsed === null) return false;
+
+  switch (target.kind) {
+    case "coordinate": {
+      const wanted = target.coordinate;
+      if (parsed.type !== wanted.type || parsed.repository !== wanted.repository) {
+        return false;
+      }
+      return namesWholeRepository(wanted) || parsed.skill === wanted.skill;
+    }
+    case "skill":
+      return parsed.skill === target.name;
+    case "path":
+      return false; // The caller turns a path into a repository coordinate first.
+  }
+}
+
+/** The whole-repository coordinate for a registered local directory, if any. */
+export function coordinateForPath(abs: string): Coordinate | null {
+  const source = findLocalByPath(expandPath(abs, process.cwd()));
+  if (source === null) return null;
+  return { type: "local", repository: source.id, skill: WHOLE_REPOSITORY };
+}
+
+/** Where a repository's cache entry is, or null when it isn't registered. */
+export function registeredRoot(coordinate: Coordinate): string | null {
+  const entry = sourcePath(coordinate.type, coordinate.repository);
+  return exists(entry) ? entry : null;
+}
+
 function discoverOptionsFor(root: string): DiscoverOptions {
-  // Discovery options come from the repo's own skill-repository.yaml.
+  // Discovery options come from the repository's own skill-repository.yaml.
   const manifest = readRepoManifest(root);
   return { exclude: manifest.exclude, maxDepth: manifest.maxDepth };
 }
 
-function isPathLike(spec: string): boolean {
+export function isPathLike(spec: string): boolean {
   return (
     spec.startsWith("./") ||
     spec.startsWith("../") ||
@@ -550,38 +631,4 @@ function isPathLike(spec: string): boolean {
     spec === ".." ||
     spec.startsWith("~")
   );
-}
-
-/**
- * The manifest key a specifier refers to, without touching the filesystem or
- * registering anything. Mirrors the precedence `resolveSpec` uses, so
- * `spm rm` matches exactly what `spm add` would have written.
- */
-export function specToEntryKey(spec: string, manifest: Manifest | null): string {
-  const trimmed = spec.trim();
-
-  if (isPathLike(trimmed)) {
-    return path.resolve(trimmed.replace(/^~(?=\/|$)/, os.homedir()));
-  }
-
-  const segments = trimmed.split("/");
-  const head = segments[0]!;
-
-  if (segments.length >= 2 && isKnownAlias(head, manifest)) {
-    return trimmed; // alias/skill or alias/*
-  }
-  if (segments.length === 1) {
-    return isKnownAlias(head, manifest) ? `${head}/*` : head;
-  }
-  if (segments.length === 2) return trimmed; // owner/repo
-  if (segments.length === 3) return `${head}/${segments[1]}:${segments[2]}`;
-
-  return trimmed;
-}
-
-/** True when `spec` is a bare skill name rather than an alias or repo. */
-export function isBareSpec(spec: string, manifest: Manifest | null): boolean {
-  const trimmed = spec.trim();
-  if (isPathLike(trimmed) || trimmed.includes("/")) return false;
-  return !isKnownAlias(trimmed, manifest);
 }

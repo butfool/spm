@@ -1,25 +1,25 @@
 import type { Command } from "commander";
 import { discoverSkills, skippedFrom, skippedLine } from "../../core/discover.js";
 import { readRepoManifest } from "../../core/repo-manifest.js";
-import { resolveSpec } from "../../core/resolve.js";
+import { resolveSpec, sourceLabel } from "../../core/resolve.js";
 import { bold, dim, heading, info } from "../../log.js";
-import { displayPath, loadManifest, scopeFrom, type GlobalOptions } from "../context.js";
+import { displayPath, loadManifest, resolveContext, scopeFrom, type GlobalOptions } from "../context.js";
 import { failOnSkippedSkills } from "../report.js";
 
 export function registerInfoCommand(program: Command): void {
   program
     .command("info")
     .description("show details for one skill")
-    .argument("<spec>", "alias/skill, owner/repo/skill, or a local path")
+    .argument("<spec>", "a coordinate such as local:mine:pdf-fill or github:owner/repo:*")
     .option("--json", "machine-readable output")
     .action(async (spec: string, opts: { json?: boolean }, command: Command) => {
       const merged = { ...opts, ...(command.optsWithGlobals() as GlobalOptions) };
       const scope = scopeFrom(merged);
       const { manifest } = loadManifest(scope, false);
 
-      const selection = await resolveSpec(spec, { manifest, register: false });
+      const selection = await resolveSpec(spec, resolveContext(manifest, scope, { register: false }));
       if (selection.skills === "*") {
-        throw new Error(`"${spec}" names a whole source — narrow it to a single skill`);
+        throw new Error(`"${spec}" names a whole repository — narrow it to a single skill`);
       }
 
       const skillName = selection.skills[0]!;
@@ -29,7 +29,7 @@ export function registerInfoCommand(program: Command): void {
         maxDepth: repo.maxDepth,
       });
       const skill = skills.find((s) => s.name === skillName);
-      const skipped = skippedFrom(selection.alias ?? selection.label, invalid);
+      const skipped = skippedFrom(sourceLabel(selection.type, selection.id), invalid);
 
       if (!skill) {
         const details = [
@@ -48,7 +48,7 @@ export function registerInfoCommand(program: Command): void {
             {
               name: skill.name,
               description: skill.description,
-              source: selection.alias,
+              source: sourceLabel(selection.type, selection.id),
               path: skill.dir,
               relativePath: skill.relativePath,
               frontmatter: skill.frontmatter,
@@ -64,7 +64,7 @@ export function registerInfoCommand(program: Command): void {
       heading(bold(skill.name));
       info(skill.description);
       info("");
-      info(`  ${dim("source")}   ${selection.alias ?? dim("(ad-hoc path)")}`);
+      info(`  ${dim("source")}   ${sourceLabel(selection.type, selection.id)}`);
       info(`  ${dim("path")}     ${displayPath(skill.dir)}`);
       info(`  ${dim("relative")} ${skill.relativePath}`);
 

@@ -7,15 +7,17 @@ a `skills.yaml`, and `spm install` makes the filesystem match — idempotently,
 every time.
 
 ```
-$ spm add anthropics/skills
-$ spm i
-3 skills → ~/.agents/skills
-✓ pdf-fill    linked → ~/.agents/skills/pdf-fill
-✓ pdf-extract linked → ~/.agents/skills/pdf-extract
-· 1 already up to date
+$ spm repository add ~/Code/Skills/Obsidian --name Obsidian
+✓ registered Obsidian → ~/Code/Skills/Obsidian
+  recorded in the global skills.yaml
+  8 skills: obsidian-icon-config, obsidian-mermaid, obsidian-note-style, …
+
+$ spm add local:Obsidian:*
+✓ obsidian-tasks linked → .agents/skills/obsidian-tasks
+· 7 already up to date
 ```
 
-There is no database. The state is the manifest plus the symlinks on disk, so
+There is no database. The state is the manifests plus the symlinks on disk, so
 `git diff` shows exactly what a teammate will get.
 
 📄 [`docs/PROMPT.md`](docs/PROMPT.md) is the complete brief this project was built
@@ -35,10 +37,24 @@ npm link        # or: npm install -g .
 **Manifest** — `skills.yaml`, either in a project (alongside `package.json`) or
 global at `~/.config/spm/skills.yaml`. `-g` selects the global one.
 
-**Source** — a directory of skills, either a local path or a github repo.
-Registering a local source symlinks it into `~/.config/spm/sources/<alias>`;
-the source directory itself is never modified. A source may carry a
-[`skill-repository.yaml`](#skill-repositoryyaml) naming it and hiding parts of it.
+**Repository** — a directory of skills. There are two kinds, and the difference
+decides whether it needs registering:
+
+| Kind | Identity | Registered? |
+| --- | --- | --- |
+| `local` | a directory on this machine, under a name you give it | yes — a path is not an identity |
+| `github` | `owner/name` | no — the path already identifies it |
+
+The **global manifest doubles as the machine-level registry**: a local
+repository registered once is usable from every project without being written
+down again. `spm repository add` writes there; `spm add` writes only the
+project manifest. A project that needs a repository nobody else has declares it
+in its own `repositories:` section.
+
+Registering a local repository symlinks it into
+`~/.config/spm/sources/local/<name>`; the directory itself is never modified. A
+github repository is cloned into `~/.config/spm/sources/github/<owner>/<repo>`,
+following the remote's default branch, and needs no declaration at all.
 
 **Skills are leaves.** A directory containing `SKILL.md` *is* a skill, and
 discovery stops there — a skill's own `references/` or `scripts/` folders are
@@ -53,43 +69,68 @@ content, never skills.
 | `spm install [spec...]` | `i` | Restore the manifest; with specs, same as `add` |
 | `spm remove <spec...>` | `rm`, `un`, `uninstall` | Drop declarations and unlink |
 | `spm list` | `ls` | Show declared skills and whether they're linked |
-| `spm find [query]` | | Search every registered source |
+| `spm find [query]` | | Search every registered repository |
 | `spm info <spec>` | | Details for one skill |
 | `spm doctor [--fix]` | | Check the manifest against disk |
-| `spm update [spec...]` | `up` | Re-fetch github sources, then relink |
-| `spm source add\|remove\|list\|refresh` | | Manage sources |
+| `spm update [spec...]` | `up` | Re-fetch github repositories, then relink |
+| `spm repository add\|remove\|list` | `repo` | Manage the machine-level registry |
 | `spm config` | | Show resolved paths and settings |
 
-Useful flags: `-g/--global`, `-f/--force`, `--frozen` (verify without writing),
-`--json` on the read-only commands.
+Useful flags: `-g/--global`, `-f/--force`, `-n/--name` (the name to register a
+local directory under), `--frozen` (verify without writing), `--json` on the
+read-only commands.
 
-### Specifiers
+## Coordinates
+
+A skill is named by three colon-separated segments, the way Gradle names a
+dependency:
+
+```
+<type>:<repository>:<skill>
+```
 
 | Form | Meaning |
 | --- | --- |
-| `alias/skill` | One skill from a registered source |
-| `alias` | **Every skill in that source** |
-| `alias/*` | Same, but quote it — see below |
-| `./path`, `~/path`, `/abs/path` | A local directory (all of it), registered on the fly |
-| `owner/repo` | A github repo, all skills |
-| `owner/repo/skill` | One skill from a github repo |
-| `owner/repo#v1.2.3` | Pin a github repo to a tag or branch |
-| `skill-name` | Looked up across every registered source |
+| `local:mine:pdf-fill` | one skill from a registered local repository |
+| `local:mine:*` | every skill in that repository |
+| `github:owner/repo:pdf-fill` | one skill from a github repository |
+| `github:owner/repo:*` | every skill in that github repository |
 
-**Prefer the bare alias over `alias/*`.** A `*` is expanded by the shell before
-spm ever sees it, so `spm add mine/*` in zsh (whose default `nomatch` mode
-rejects unmatched globs) fails with `no matches found` — and in a directory
-that *does* contain a `mine/` folder, it silently expands to whatever is in
-there instead. `spm add mine` needs no quoting and can't be misread.
+The type segment is what keeps the two kinds apart: a repository name can never
+contain a slash, so `local:Obsidian:x` and `github:a/b:x` cannot be confused,
+and a mistyped type is an error rather than a surprise.
 
-A bare word is resolved as a source alias first, and only then as a skill name.
-So if an alias and a skill elsewhere share a name, the alias wins; the install
-output names every skill it expanded, so what happened is never ambiguous.
+The command line accepts a shortened form, because `owner/repo` carries a slash
+a repository name never has, and a bare name is only treated as a repository
+when this machine already knows it:
 
-A bare name that matches in more than one source is an error listing the
+| Input | Resolved as |
+| --- | --- |
+| `Obsidian:pdf-fill`, `Obsidian:*`, `Obsidian` | local repository (when the name is known) |
+| `owner/repo:pdf-fill`, `owner/repo:*`, `owner/repo` | github repository |
+| `./path`, `~/path`, `/abs/path` | a local directory, registered on the fly |
+| `pdf-fill` | a skill looked up across every registered repository |
+
+Whatever you type, the manifest gets the full three-segment form. A bare skill
+name that matches in more than one repository is an error listing the
 candidates, rather than a guess.
 
 ## skills.yaml
+
+The global manifest, which is also the machine-level registry:
+
+```yaml
+repositories:
+  Obsidian:
+    type: local
+    path: ~/Code/Skills/Obsidian
+  iWhaleCloud:
+    type: local
+    path: ~/Code/iWhaleCloud/Skills
+```
+
+A project manifest names the skills it wants. Shared repositories are already
+registered, so they are not repeated:
 
 ```yaml
 # Where declared skills get linked, relative to this file.
@@ -97,39 +138,45 @@ installDirs:
   - .agents/skills
   - .claude/skills
 
-# Where each alias comes from, so a fresh clone can bootstrap with `spm i`.
-sources:
-  mine:
-    path: ~/my-skills
-  upstream:
-    repo: anthropics/skills
-    ref: main
+# Only the repositories this project alone needs.
+repositories:
+  shared:
+    type: local
+    path: ../shared/skills
 
 skills:
-  - mine/*
-  - upstream/pdf-fill
+  - github:vercel-labs/agent-skills:vercel-react-best-practices
+  - local:iWhaleCloud:*
+  - local:Obsidian:*
+  - local:shared:*
 ```
 
 `installDirs` is a list because one skill usually needs to be visible to
 several agents at once. Every declared skill is linked into every listed
 directory.
 
-There is **no version solving**. Skills don't depend on each other, so the
-manifest is a flat list; the only reproducibility lever is pinning a github
-`ref`.
+A local `path` resolves against the directory its manifest sits in, so a
+project moves together with the repositories it names. `~` expands to `$HOME`.
+
+There is **no version solving**, and no ref pinning: SKILL.md files don't
+depend on each other, so the manifest is a flat list, and a github repository
+follows its default branch. `spm update` re-fetches it.
 
 ### skill-repository.yaml
 
-A source may describe itself, so the repository can move without breaking
+A repository may describe itself, so a directory can move without breaking
 anything:
 
 ```yaml
-name: my-skills      # also the default alias when registering
+name: my-skills      # also the default name when registering the directory
 exclude:             # path prefixes hidden from discovery
   - drafts
   - archive
 maxDepth: 3
 ```
+
+`name` only matters for local repositories. A github repository is identified
+by its path, so nothing there is read.
 
 Deliberately minimal — no UUIDs, no per-skill identity. Renaming a skill is the
 author's problem, not the tool's.
@@ -144,7 +191,6 @@ installDirs:
   - .agents/skills
   - .claude/skills
 sourcesDir: sources
-defaultRef: main
 ```
 
 Set `SPM_HOME` to relocate the whole thing (used by the test suite).
@@ -177,7 +223,7 @@ silent:
 - every command that discovers skills prints each skipped file and its reason
   to stderr, then exits non-zero. The install itself still runs, so the usable
   part of a repository stays available
-- `spm source add` does not report success for a directory that exposes no
+- `spm repository add` does not report success for a directory that exposes no
   usable skill at all
 - `spm doctor` lists every skipped file as an `error`
 
@@ -193,7 +239,7 @@ npm test           # vitest
 npm run build      # emit to dist/ (src only)
 ```
 
-Tests write to a temp `SPM_HOME`, never your real one.
+Tests write to a temp `SPM_HOME` and `HOME`, never your real ones.
 
 Two configs, deliberately split:
 

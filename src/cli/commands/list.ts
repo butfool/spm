@@ -1,6 +1,6 @@
-import path from "node:path";
 import type { Command } from "commander";
 import { installDirsFor, inspectTargets } from "../../core/install.js";
+import { manifestPath } from "../../core/manifest.js";
 import { dim, heading, info, warn } from "../../log.js";
 import { displayPath, loadManifest, scopeFrom, type GlobalOptions } from "../context.js";
 import { failOnSkippedSkills } from "../report.js";
@@ -27,7 +27,11 @@ export function registerListCommand(program: Command): void {
 
       const { expandSelections, resolveManifestEntries } = await import("../../core/resolve.js");
       const { targets, skipped } = expandSelections(
-        await resolveManifestEntries(manifest, { register: false }),
+        await resolveManifestEntries(manifest, {
+          manifestDir: scope.manifestDir,
+          global: scope.kind === "global",
+          register: false,
+        }),
       );
       const states = inspectTargets(targets, manifest, scope);
 
@@ -35,11 +39,11 @@ export function registerListCommand(program: Command): void {
         process.stdout.write(
           `${JSON.stringify(
             {
-              manifest: path.join(scope.manifestDir, "skills.yaml"),
+              manifest: manifestPath(scope.manifestDir),
               installDirs: installDirsFor(manifest, scope),
               skills: states.map((s) => ({
                 name: s.name,
-                source: s.sourceAlias ?? s.skillDir,
+                source: s.source,
                 targets: s.dirs.map((d) => ({ dir: d.dir, state: d.state })),
               })),
             },
@@ -62,7 +66,7 @@ export function registerListCommand(program: Command): void {
       for (const state of states) {
         const bad = state.dirs.filter((d) => d.state !== "ok");
         const marker = bad.length === 0 ? dim("ok") : warnMarker(bad.length, state.dirs.length);
-        const source = state.sourceAlias === null ? "" : dim(state.sourceAlias);
+        const source = dim(state.source);
         process.stdout.write(`  ${state.name.padEnd(width)}  ${marker}  ${source}\n`);
       }
 

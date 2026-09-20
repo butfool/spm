@@ -2,9 +2,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { isInside, sourcesDir } from "../config.js";
 import { exists, isDirectory, isSymlink, linkPointsTo, readLink } from "../fsutil.js";
+import { SpmError } from "../errors.js";
 import { skippedLine, type SkippedSkill } from "./discover.js";
 import { installDirsFor } from "./install.js";
 import type { Manifest } from "./manifest.js";
+import { declarationConflict, repositoryLayers } from "./registry.js";
 import {
   expandSelections,
   resolveManifestEntries,
@@ -12,7 +14,6 @@ import {
   type Scope,
   type SkillTarget,
 } from "./resolve.js";
-import { listSources } from "./source.js";
 
 export type IssueLevel = "error" | "warning";
 
@@ -23,7 +24,7 @@ export interface Issue {
   /** One-line description of what is wrong. */
   message: string;
   /** Suggested remedy. */
-  fix?: string;
+  fix?: string | undefined;
 }
 
 export interface DoctorReport {
@@ -35,7 +36,7 @@ export interface DoctorReport {
 /**
  * Compares the manifest against what is actually on disk.
  *
- * Unlike `install`, this never registers sources or writes anything — it
+ * Unlike `install`, this never registers repositories or writes anything — it
  * reports what `spm i` *would* do, plus problems `spm i` cannot fix on its
  * own (a hand-made directory squatting on a skill name, for instance).
  */
@@ -45,37 +46,49 @@ export async function diagnose(
   opts: { checkRemote?: boolean } = {},
 ): Promise<DoctorReport> {
   const issues: Issue[] = [];
+  void opts;
 
-  // 1. Declared sources must be resolvable.
-  const registered = await listSources();
-  const registeredAliases = new Set(registered.map((s) => s.alias));
+  const layers = repositoryLayers(manifest, scope.manifestDir, scope.kind === "global");
 
-  for (const [alias, decl] of Object.entries(manifest.sources)) {
-    if (registeredAliases.has(alias)) continue;
+  // 1. The two declaration layers must agree about a name. A repository whose
+  // directory is gone is reported by the resolution step below, which is the
+  // only place that still knows which repository it was — reporting it here as
+  // well would count one root cause twice.
+  for (const name of layers.local.keys()) {
+    const conflict = declarationConflict(name, layers);
+    if (!conflict) continue;
+
     issues.push({
-      level: "warning",
-      kind: "source_not_registered",
-      message: `source "${alias}" is declared but not registered locally`,
-      fix: `spm i will fetch it${decl.repo !== undefined ? ` from ${decl.repo}` : ""}`,
+      level: "error",
+      kind: "repository_declared_twice",
+      message: `local repository "${name}" is declared at two paths: ${conflict.local.path} (this manifest) and ${conflict.global.path} (global)`,
+      fix: "Keep one declaration, or rename one of them.",
     });
   }
 
   // 2. Every declared skill must resolve to a real directory, and every
   // SKILL.md discovery skipped must be reported.
   let targets: SkillTarget[] = [];
+  let resolved = true;
   try {
-    const selections = await resolveManifestEntries(manifest, { register: false });
+    const selections = await resolveManifestEntries(manifest, {
+      manifestDir: scope.manifestDir,
+      global: scope.kind === "global",
+      register: false,
+    });
     const expansion = expandSelections(selections);
     targets = expansion.targets;
     pushInvalidSkillIssues(issues, expansion.skipped);
   } catch (err) {
     // An entry that resolves to nothing aborts the expansion. The skipped
     // files explain why, so they are reported even though the walk stopped.
+    resolved = false;
     if (err instanceof SkillResolutionError) pushInvalidSkillIssues(issues, err.skipped);
     issues.push({
       level: "error",
       kind: "unresolvable_manifest",
       message: (err as Error).message,
+      fix: err instanceof SpmError ? err.hint : undefined,
     });
   }
 
@@ -85,7 +98,7 @@ export async function diagnose(
         level: "error",
         kind: "missing_source_dir",
         message: `skill "${target.name}" points at a missing directory: ${target.skillDir}`,
-        fix: "spm source refresh, or re-register the source",
+        fix: `Fix ${target.source}, then run \`spm i\`.`,
       });
     }
   }
@@ -164,6 +177,10 @@ export async function diagnose(
     }
 
     // 3b. Links into the source cache that the manifest no longer declares.
+    // Only meaningful once the declared set is known: an aborted expansion
+    // leaves `targets` empty, and every link would look undeclared.
+    if (!resolved) continue;
+
     for (const name of fs.readdirSync(dir)) {
       if (name.startsWith(".")) continue;
       if (desired.has(name)) continue;

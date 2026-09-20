@@ -10,7 +10,7 @@ import { registerInitCommand } from "./commands/init.js";
 import { registerInstallCommand } from "./commands/install.js";
 import { registerListCommand } from "./commands/list.js";
 import { registerRemoveCommand } from "./commands/remove.js";
-import { registerSourceCommand } from "./commands/source.js";
+import { registerRepositoryCommand } from "./commands/repository.js";
 import { registerUpdateCommand } from "./commands/update.js";
 
 export function buildProgram(): Command {
@@ -37,7 +37,7 @@ export function buildProgram(): Command {
   registerListCommand(program);
   registerFindCommand(program);
   registerInfoCommand(program);
-  registerSourceCommand(program);
+  registerRepositoryCommand(program);
   registerDoctorCommand(program);
   registerUpdateCommand(program);
   registerConfigCommand(program);
