@@ -1,6 +1,8 @@
 import os from "node:os";
 import { expandPath, spmHome } from "../config.js";
+import { SpmError } from "../errors.js";
 import {
+  upsertAlias,
   upsertRepository,
   writeManifest,
   readManifest,
@@ -118,11 +120,7 @@ export function declaredNames(layers: RepositoryLayers): Set<string> {
  * global manifest. Creates the file when it doesn't exist yet.
  */
 export function declareRepository(name: string, path: string): boolean {
-  const manifest: Manifest = readGlobalManifest() ?? {
-    installDirs: [],
-    repositories: {},
-    skills: [],
-  };
+  const manifest: Manifest = readGlobalManifest() ?? emptyManifest();
 
   if (!upsertRepository(manifest, name, { type: "local", path })) return false;
   writeManifest(spmHome(), manifest);
@@ -145,4 +143,72 @@ export function globalRepositories(): Map<string, DeclaredLocalRepository> {
   const manifest = readGlobalManifest();
   if (manifest === null) return new Map();
   return toMap(manifest.repositories, os.homedir(), "global");
+}
+
+/**
+ * A machine-level name for one skill, as the global manifest declares it.
+ *
+ * `baseDir` is always `$HOME`: an alias is a machine-level statement, so a
+ * relative `path:` among its targets resolves against `$HOME` just as a
+ * repository `path` in the global manifest does.
+ */
+export interface DeclaredAlias {
+  name: string;
+  /** The coordinate the alias names, exactly as written. */
+  target: string;
+  baseDir: string;
+}
+
+/** The alias table, as name → declaration. */
+export function globalAliases(): Map<string, DeclaredAlias> {
+  const manifest = readGlobalManifest();
+  if (manifest === null) return new Map();
+  return new Map(
+    Object.entries(manifest.aliases).map(([name, target]) => [
+      name,
+      { name, target, baseDir: os.homedir() },
+    ]),
+  );
+}
+
+/** Defines an alias in the global manifest. Returns false when it was already there. */
+export function declareAlias(name: string, target: string): boolean {
+  const manifest: Manifest = readGlobalManifest() ?? emptyManifest();
+  if (!upsertAlias(manifest, name, target)) return false;
+  writeManifest(spmHome(), manifest);
+  return true;
+}
+
+/** Removes an alias from the global manifest. */
+export function undeclareAlias(name: string): boolean {
+  const manifest = readGlobalManifest();
+  if (manifest === null) return false;
+  if (manifest.aliases[name] === undefined) return false;
+
+  delete manifest.aliases[name];
+  writeManifest(spmHome(), manifest);
+  return true;
+}
+
+/**
+ * The default new global manifest.
+ *
+ * Kept in one place because every writer has to start from the same shape:
+ * building it by hand is how a section such as `aliases:` gets dropped by the
+ * next write.
+ */
+export function emptyManifest(): Manifest {
+  return { installDirs: [], repositories: {}, aliases: {}, skills: [] };
+}
+
+/** Refuses `aliases:` in a project manifest, which is where it does not belong. */
+export function assertNoProjectAliases(manifest: Manifest, global: boolean): void {
+  if (global) return;
+  const names = Object.keys(manifest.aliases);
+  if (names.length === 0) return;
+
+  throw new SpmError(
+    `this manifest declares aliases: ${names.join(", ")}`,
+    "An alias is a machine-level name, so it belongs in the global skills.yaml. Move it there with `spm alias add`.",
+  );
 }

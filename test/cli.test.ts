@@ -224,6 +224,212 @@ describe("declaring skills", () => {
   });
 });
 
+describe("installing a skill by path", () => {
+  it("records the directory instead of registering a source", async () => {
+    const lone = writeSkill(tmpdir("spm-cli-lone"), "", "lone");
+
+    const result = await spm("add", lone);
+
+    expect(result.code).toBe(0);
+    expect(readManifest(project)).toContain(`path:${lone}`);
+    expect(readManifest(project)).not.toContain("repositories:");
+    expect(entries(path.join(project, ".agents/skills"))).toEqual(["lone"]);
+    // Nothing was registered on this machine.
+    expect(fs.existsSync(path.join(home, "sources", "local"))).toBe(false);
+  });
+
+  it("accepts the path: form and stays out of the search scope", async () => {
+    const lone = writeSkill(tmpdir("spm-cli-lone2"), "", "lone2");
+    writeManifest(project, `installDirs:\n  - .agents/skills\nskills:\n  - path:${lone}\n`);
+
+    const installed = await spm("install");
+
+    expect(installed.code).toBe(0);
+    expect(entries(path.join(project, ".agents/skills"))).toEqual(["lone2"]);
+
+    const listed = await spm("list", "--json");
+    const parsed = JSON.parse(listed.stdout) as { skills: { name: string; source: string }[] };
+    expect(parsed.skills).toHaveLength(1);
+    expect(parsed.skills[0]).toMatchObject({ name: "lone2", source: `path:${lone}` });
+
+    // A path coordinate registers nothing, so it is not searchable.
+    const found = await spm("find", "lone2");
+    expect(found.stdout).not.toContain("lone2");
+  });
+
+  it("installs a skill inside a registered repository by path", async () => {
+    const repo = tmpdir("spm-cli-nested");
+    writeSkill(repo, "one", "one");
+    await spm("repository", "add", repo, "--name", "mine");
+
+    const result = await spm("add", path.join(repo, "one"));
+
+    expect(result.code).toBe(0);
+    expect(readManifest(project)).toContain(`path:${path.join(repo, "one")}`);
+    expect(readManifest(project)).not.toContain("repositories:");
+    expect(entries(path.join(project, ".agents/skills"))).toEqual(["one"]);
+  });
+
+  it("drops the declaration and the link on remove", async () => {
+    const lone = writeSkill(tmpdir("spm-cli-lone3"), "", "lone3");
+    await spm("add", lone);
+
+    const removed = await spm("remove", lone);
+
+    expect(removed.code).toBe(0);
+    expect(readManifest(project)).not.toContain("path:");
+    expect(entries(path.join(project, ".agents/skills"))).toEqual([]);
+  });
+
+  it("refuses to register a skill directory as a repository", async () => {
+    const lone = writeSkill(tmpdir("spm-cli-lone4"), "", "lone4");
+
+    const result = await spm("repository", "add", lone, "--name", "lone4");
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toMatch(/is a skill directory, not a repository/);
+    expect(fs.existsSync(path.join(home, "sources", "local"))).toBe(false);
+    expect(fs.existsSync(path.join(home, "skills.yaml"))).toBe(false);
+  });
+
+  it("refuses a name for a skill directory, which has none to give", async () => {
+    const lone = writeSkill(tmpdir("spm-cli-lone6"), "", "lone6");
+
+    const result = await spm("add", lone, "--name", "mine");
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toMatch(/--name does not apply/);
+  });
+
+  it("explains a declaration that points a repository at a skill directory", async () => {
+    const lone = writeSkill(tmpdir("spm-cli-lone5"), "", "lone5");
+    writeManifest(
+      project,
+      `installDirs:\n  - .agents/skills\nrepositories:\n  lone5:\n    type: local\n    path: "${lone}"\nskills:\n  - local:lone5:lone5\n`,
+    );
+
+    const result = await spm("install");
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toMatch(/is a skill directory, not a repository/);
+    expect(result.stderr).toMatch(/spm add path:/);
+  });
+});
+
+describe("aliases", () => {
+  it("defines a name once and installs it in a project", async () => {
+    const lone = writeSkill(tmpdir("spm-cli-alias"), "", "mine");
+
+    const defined = await spm("alias", "add", "mine", `path:${lone}`);
+
+    expect(defined.code).toBe(0);
+    expect(defined.stdout).toContain("defined alias mine");
+    expect(globalManifest()).toContain("mine:");
+
+    const added = await spm("add", "alias:mine");
+
+    expect(added.code).toBe(0);
+    expect(readManifest(project)).toContain("alias:mine");
+    expect(entries(path.join(project, ".agents/skills"))).toEqual(["mine"]);
+  });
+
+  it("does not answer a bare name, because the two tables are separate", async () => {
+    const lone = writeSkill(tmpdir("spm-cli-alias2"), "", "mine");
+    await spm("alias", "add", "mine", `path:${lone}`);
+
+    const result = await spm("add", "mine");
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toMatch(/no skill named "mine"/);
+  });
+
+  it("lists the table", async () => {
+    const one = writeSkill(tmpdir("spm-cli-alias3a"), "", "one");
+    const two = writeSkill(tmpdir("spm-cli-alias3b"), "", "two");
+    await spm("alias", "add", "one", `path:${one}`);
+    await spm("alias", "add", "two", `path:${two}`);
+
+    const text = await spm("alias", "list");
+    expect(text.code).toBe(0);
+    expect(text.stdout).toContain("2 aliases");
+    expect(text.stdout).toContain(one);
+
+    const json = await spm("alias", "list", "--json");
+    expect(JSON.parse(json.stdout)).toEqual({
+      aliases: [
+        { name: "one", target: `path:${one}` },
+        { name: "two", target: `path:${two}` },
+      ],
+    });
+  });
+
+  it("refuses a name that could not be a coordinate segment", async () => {
+    const lone = writeSkill(tmpdir("spm-cli-alias4"), "", "mine");
+
+    const result = await spm("alias", "add", "path", `path:${lone}`);
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toMatch(/not a usable alias name/);
+  });
+
+  it("refuses a target that names a whole repository", async () => {
+    const repo = tmpdir("spm-cli-alias5");
+    writeSkill(repo, "one", "one");
+    await spm("repository", "add", repo, "--name", "mine");
+
+    const result = await spm("alias", "add", "everything", "local:mine:*");
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toMatch(/whole repository/);
+  });
+
+  it("checks a path target before recording it", async () => {
+    const result = await spm("alias", "add", "mine", "path:/nowhere/at/all");
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toMatch(/is not a directory/);
+    expect(fs.existsSync(path.join(home, "skills.yaml"))).toBe(false);
+  });
+
+  it("stores a relative path target as an absolute one", async () => {
+    const lone = writeSkill(tmpdir("spm-cli-alias6"), "", "mine");
+
+    // Relative to the project, which is where nobody would want it resolved
+    // from: the table is machine-level.
+    const result = await spm("alias", "add", "mine", `path:${path.relative(project, lone)}`);
+
+    expect(result.code).toBe(0);
+    const stored = /mine: (.*)/.exec(globalManifest())![1]!.trim().replace(/^path:/, "");
+    expect(path.isAbsolute(stored)).toBe(true);
+    expect(fs.realpathSync(stored)).toBe(fs.realpathSync(lone));
+  });
+
+  it("removes a name, but not while the global manifest installs it", async () => {
+    const lone = writeSkill(tmpdir("spm-cli-alias7"), "", "mine");
+    await spm("alias", "add", "mine", `path:${lone}`);
+    await spm("add", "-g", "alias:mine");
+
+    const refused = await spm("alias", "remove", "mine");
+    expect(refused.code).toBe(1);
+    expect(refused.stderr).toMatch(/installs alias:mine/);
+
+    await spm("rm", "-g", "alias:mine");
+    const removed = await spm("alias", "remove", "mine");
+
+    expect(removed.code).toBe(0);
+    expect(globalManifest()).not.toContain("mine:");
+  });
+
+  it("refuses aliases in a project manifest", async () => {
+    writeManifest(project, "aliases:\n  mine: path:/x\nskills: []\n");
+
+    const result = await spm("list");
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toMatch(/belongs in the global skills\.yaml/);
+  });
+});
+
 describe("reporting a skipped SKILL.md", () => {
   it("add: installs the usable skills, names the skipped file, and fails", async () => {
     const repo = tmpdir("spm-cli-mixed");
@@ -238,6 +444,19 @@ describe("reporting a skipped SKILL.md", () => {
     expect(result.stderr).toContain("broken/SKILL.md");
     expect(result.stderr).toMatch(/may only contain lowercase letters/);
     expect(result.stderr).toContain("1 SKILL.md file skipped");
+  });
+
+  it("add: does not register a directory that exposes no usable skill", async () => {
+    const empty = tmpdir("spm-cli-no-skill");
+    writeSkillFile(empty, "broken", "---\nname: Broken\ndescription: x\n---\n");
+
+    const result = await spm("add", empty);
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("broken/SKILL.md");
+    // The registration would serve nothing but errors, so there is none.
+    expect(fs.existsSync(path.join(home, "sources", "local"))).toBe(false);
+    expect(fs.existsSync(path.join(project, "skills.yaml"))).toBe(false);
   });
 
   it("repository add: does not claim success for a directory with no usable skill", async () => {

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { parseCoordinate } from "../src/core/coordinate.js";
+import { isRepositoryCoordinate, parseCoordinate } from "../src/core/coordinate.js";
 import {
   addSkillEntry,
   manifestCoordinates,
@@ -9,6 +9,7 @@ import {
   readManifest,
   removeSkillEntry,
   removeSkillEntries,
+  upsertAlias,
   upsertRepository,
   writeManifest,
   type Manifest,
@@ -16,7 +17,12 @@ import {
 import { readRepoManifest } from "../src/core/repo-manifest.js";
 import { tmpdir } from "./helpers.js";
 
-const empty = (): Manifest => ({ installDirs: [], repositories: {}, skills: [] });
+const empty = (): Manifest => ({
+  installDirs: [],
+  repositories: {},
+  aliases: {},
+  skills: [],
+});
 
 describe("manifest round-trip", () => {
   it("preserves repositories, skills, and installDirs", () => {
@@ -27,6 +33,7 @@ describe("manifest round-trip", () => {
         mine: { type: "local", path: "/tmp/x" },
         other: { type: "local", path: "~/other" },
       },
+      aliases: { pdf: "local:mine:pdf", "xmind-file": "path:~/xmind-file" },
       skills: ["local:mine:*", "github:a/b:pdf-fill"],
     });
 
@@ -35,6 +42,8 @@ describe("manifest round-trip", () => {
     expect(back!.installDirs).toEqual([".agents/skills", ".claude/skills"]);
     expect(back!.repositories["mine"]).toEqual({ type: "local", path: "/tmp/x" });
     expect(back!.repositories["other"]).toEqual({ type: "local", path: "~/other" });
+    expect(back!.aliases["pdf"]).toBe("local:mine:pdf");
+    expect(back!.aliases["xmind-file"]).toBe("path:~/xmind-file");
     expect(back!.skills).toEqual(["github:a/b:pdf-fill", "local:mine:*"]);
   });
 
@@ -43,10 +52,15 @@ describe("manifest round-trip", () => {
     writeManifest(dir, {
       installDirs: [],
       repositories: {},
+      aliases: {},
       skills: ["local:mine:*", "github:a/b:pdf"],
     });
 
-    expect(manifestCoordinates(readManifest(dir)!).map((c) => c.skill)).toEqual(["pdf", "*"]);
+    expect(
+      manifestCoordinates(readManifest(dir)!).map((c) =>
+        isRepositoryCoordinate(c) ? c.skill : c.type,
+      ),
+    ).toEqual(["pdf", "*"]);
   });
 
   it("returns null when the file is absent", () => {
@@ -61,6 +75,7 @@ describe("manifest round-trip", () => {
     writeManifest(dir, {
       installDirs: [],
       repositories: { "kimi-cu": { type: "local", path: longPath } },
+      aliases: {},
       skills: [],
     });
 
@@ -75,11 +90,13 @@ describe("manifest round-trip", () => {
     writeManifest(a, {
       installDirs: [],
       repositories: { zeta: { type: "local", path: "/z" }, alpha: { type: "local", path: "/a" } },
+      aliases: { zulu: "path:/z", alpha2: "path:/a" },
       skills: ["local:zeta:two", "local:alpha:one"],
     });
     writeManifest(b, {
       installDirs: [],
       repositories: { alpha: { type: "local", path: "/a" }, zeta: { type: "local", path: "/z" } },
+      aliases: { alpha2: "path:/a", zulu: "path:/z" },
       skills: ["local:alpha:one", "local:zeta:two"],
     });
 
@@ -141,6 +158,34 @@ describe("manifest round-trip", () => {
     fs.writeFileSync(manifestPath(dir), "skills:\n  - github:mine:pdf\n", "utf8");
     expect(() => readManifest(dir)).toThrow(/not a github repository — expected owner\/name/);
   });
+
+  it("rejects an alias name that could not be a coordinate segment", () => {
+    const dir = tmpdir("spm-man");
+    fs.writeFileSync(
+      manifestPath(dir),
+      'aliases:\n  "../evil": path:/x\n',
+      "utf8",
+    );
+    expect(() => readManifest(dir)).toThrow(/unusable alias name/);
+  });
+
+  it("rejects an alias that names a whole repository", () => {
+    const dir = tmpdir("spm-man");
+    fs.writeFileSync(manifestPath(dir), "aliases:\n  mine: local:other:*\n", "utf8");
+    expect(() => readManifest(dir)).toThrow(/as a whole repository/);
+  });
+
+  it("rejects an alias that names another alias", () => {
+    const dir = tmpdir("spm-man");
+    fs.writeFileSync(manifestPath(dir), "aliases:\n  mine: alias:other\n", "utf8");
+    expect(() => readManifest(dir)).toThrow(/as another alias/);
+  });
+
+  it("rejects an alias whose target is not a coordinate", () => {
+    const dir = tmpdir("spm-man");
+    fs.writeFileSync(manifestPath(dir), "aliases:\n  mine: /plain/dir\n", "utf8");
+    expect(() => readManifest(dir)).toThrow(/declares the alias "mine" as "\/plain\/dir"/);
+  });
 });
 
 describe("addSkillEntry", () => {
@@ -177,6 +222,19 @@ describe("addSkillEntry", () => {
     expect(addSkillEntry(m, parseCoordinate("github:a/b:x"))).toBe(true);
     expect(m.skills).toEqual(["local:b:*", "github:a/b:x"]);
   });
+
+  it("never lets one path entry stand for another", () => {
+    const m = empty();
+    expect(addSkillEntry(m, parseCoordinate("path:/x/skills/pdf"))).toBe(true);
+    expect(addSkillEntry(m, parseCoordinate("path:/x/skills/pdf"))).toBe(false);
+    expect(addSkillEntry(m, parseCoordinate("path:/x/skills/other"))).toBe(true);
+    expect(addSkillEntry(m, parseCoordinate("local:mine:*"))).toBe(true);
+    expect(m.skills).toEqual([
+      "path:/x/skills/pdf",
+      "path:/x/skills/other",
+      "local:mine:*",
+    ]);
+  });
 });
 
 describe("removeSkillEntry", () => {
@@ -184,6 +242,7 @@ describe("removeSkillEntry", () => {
     const m: Manifest = {
       installDirs: [],
       repositories: {},
+      aliases: {},
       skills: ["local:a:x", "local:b:y"],
     };
     expect(removeSkillEntry(m, parseCoordinate("local:a:x"))).toBe(true);
@@ -195,6 +254,7 @@ describe("removeSkillEntry", () => {
     const m: Manifest = {
       installDirs: [],
       repositories: {},
+      aliases: {},
       skills: ["local:a:x", "local:a:y", "local:b:z"],
     };
     expect(removeSkillEntries(m, (entry) => entry.startsWith("local:a:"))).toBe(2);
@@ -209,6 +269,24 @@ describe("upsertRepository", () => {
     expect(upsertRepository(m, "mine", { type: "local", path: "/x" })).toBe(false);
     expect(upsertRepository(m, "mine", { type: "local", path: "/y" })).toBe(true);
     expect(m.repositories["mine"]).toEqual({ type: "local", path: "/y" });
+  });
+});
+
+describe("upsertAlias", () => {
+  it("adds, retargets, and reports no-op writes", () => {
+    const m = empty();
+    expect(upsertAlias(m, "md-lint", "path:/x/md-lint")).toBe(true);
+    expect(upsertAlias(m, "md-lint", "path:/x/md-lint")).toBe(false);
+    expect(upsertAlias(m, "md-lint", "path:/y/md-lint")).toBe(true);
+    expect(m.aliases["md-lint"]).toBe("path:/y/md-lint");
+  });
+
+  it("keeps a repository and an alias of the same name apart", () => {
+    const m = empty();
+    upsertRepository(m, "md-lint", { type: "local", path: "/x" });
+    expect(upsertAlias(m, "md-lint", "path:/y/md-lint")).toBe(true);
+    expect(m.repositories["md-lint"]).toEqual({ type: "local", path: "/x" });
+    expect(m.aliases["md-lint"]).toBe("path:/y/md-lint");
   });
 });
 

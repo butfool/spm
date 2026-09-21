@@ -1,8 +1,9 @@
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { sourcesDir } from "../config.js";
 import { SpmError } from "../errors.js";
-import { canonical, exists, isDirectory, readLink } from "../fsutil.js";
+import { canonical, ensureSymlink, exists, isDirectory, readLink } from "../fsutil.js";
 import { validGithubRepository, validRepositoryName } from "./coordinate.js";
 import * as git from "./git.js";
 import { readRepoName } from "./repo-manifest.js";
@@ -28,6 +29,40 @@ export interface RegisteredSource {
 /** `<SPM_HOME>/sources/local`: one symlink per registered local repository. */
 export function localCacheDir(): string {
   return path.join(sourcesDir(), "local");
+}
+
+/**
+ * `<SPM_HOME>/sources/path`: one symlink per skill directory installed by a
+ * `path:` coordinate.
+ *
+ * A path coordinate registers nothing and joins no search scope, so this is
+ * not an entry in the machine-level registry: nothing reads the directory
+ * except the link that points into it. It exists because "is this link spm's?"
+ * is answered by asking whether the target sits inside the source cache, and a
+ * link straight to the user's own directory would be indistinguishable from
+ * one they made by hand.
+ */
+export function pathCacheDir(): string {
+  return path.join(sourcesDir(), "path");
+}
+
+/** The cache entry for a skill directory installed by `path:`. */
+export function pathSourceEntry(dir: string): string {
+  const key = createHash("sha256").update(canonical(dir)).digest("hex").slice(0, 16);
+  return path.join(pathCacheDir(), key);
+}
+
+/**
+ * Makes sure a skill directory has its cache entry, and returns it.
+ *
+ * The entry is named after a hash of the directory, so two directories sharing
+ * a basename cannot land on the same entry.
+ */
+export function ensurePathSource(dir: string): string {
+  const entry = pathSourceEntry(dir);
+  fs.mkdirSync(pathCacheDir(), { recursive: true });
+  ensureSymlink(dir, entry);
+  return entry;
 }
 
 /** `<SPM_HOME>/sources/github`: one clone per `owner/repo`. */
@@ -101,6 +136,12 @@ export function defaultRepositoryName(absPath: string): string {
  * Registers a local directory by symlinking it into the source cache. The
  * directory itself is never modified — that's the whole point of registering
  * rather than copying, since a change in the repository is picked up at once.
+ *
+ * A directory holding SKILL.md is itself one skill, and a source is a
+ * *directory of skills*: registering it would create a name that carries no
+ * information and would let the same directory be reached twice under two
+ * names. Such a directory is installed by path instead, which records no
+ * source at all.
  */
 export function registerLocal(
   inputPath: string,
@@ -112,10 +153,16 @@ export function registerLocal(
   if (!isDirectory(abs)) {
     throw new SpmError(`not a directory: ${abs}`);
   }
+  if (exists(path.join(abs, "SKILL.md"))) {
+    throw new SpmError(
+      `${abs} is a skill directory, not a repository`,
+      `A source is a directory of skills. Install this one with \`spm add path:${abs}\`, or register the directory above it.`,
+    );
+  }
   if (!validRepositoryName(name)) {
     throw new SpmError(
       `"${name}" is not a usable repository name`,
-      "Names may contain letters, digits, dots, dashes and underscores, may not start with a dot, and may not be local or github.",
+      "Names may contain letters, digits, dots, dashes and underscores, may not start with a dot, and may not be local, github or path.",
     );
   }
 

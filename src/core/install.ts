@@ -132,18 +132,34 @@ function removeEntry(p: string): void {
 }
 
 /**
- * Removes links in each install directory that point into the source cache
- * but aren't declared by this manifest any more.
+ * The target of the symlink at `linkPath`, when that link is one spm made.
  *
- * The "points into the sources tree" test is what makes this safe: a link the
- * user made by hand to their own working copy is left alone, because spm did
- * not create it and cannot know whether it is still wanted.
+ * The test is the target's location, and it is the whole reason `spm` needs no
+ * ownership table: every link spm makes points into the source cache, whether
+ * it belongs to a repository or to a `path:` coordinate. Anything else is
+ * somebody else's link, and spm cannot know whether it is still wanted.
+ *
+ * Returns null for anything else, including a non-symlink.
+ */
+export function ownedLinkTarget(linkPath: string): string | null {
+  const current = readLink(linkPath);
+  if (current === null) return null;
+  return isInside(current, sourcesDir()) ? current : null;
+}
+
+/**
+ * Removes links in each install directory that spm made but this manifest no
+ * longer declares.
+ *
+ * What counts as one of spm's links is `ownedLinkTarget`'s question, and the
+ * answer is "its target lives in the source cache". A link the user made by
+ * hand is therefore left alone: spm did not create it and cannot know whether
+ * it is still wanted.
  */
 export function pruneOrphans(
   installDirs: string[],
   targets: SkillTarget[],
 ): { skillName: string; linkPath: string }[] {
-  const roots = sourcesDir();
   const desired = new Set(targets.map((t) => t.name));
   const removed: { skillName: string; linkPath: string }[] = [];
 
@@ -155,9 +171,7 @@ export function pruneOrphans(
       if (desired.has(name)) continue;
 
       const linkPath = path.join(dir, name);
-      const current = readLink(linkPath);
-      if (current === null) continue;
-      if (!isInside(current, roots)) continue;
+      if (ownedLinkTarget(linkPath) === null) continue;
 
       fs.unlinkSync(linkPath);
       removed.push({ skillName: name, linkPath });
@@ -174,16 +188,13 @@ export function uninstallSkills(
   scope: Scope,
 ): { skillName: string; linkPath: string }[] {
   const installDirs = installDirsFor(manifest, scope);
-  const roots = sourcesDir();
   const removed: { skillName: string; linkPath: string }[] = [];
 
   for (const dir of installDirs) {
     if (!isDirectory(dir)) continue;
     for (const name of skillNames) {
       const linkPath = path.join(dir, name);
-      const current = readLink(linkPath);
-      if (current === null) continue;
-      if (!isInside(current, roots)) continue;
+      if (ownedLinkTarget(linkPath) === null) continue;
       fs.unlinkSync(linkPath);
       removed.push({ skillName: name, linkPath });
     }

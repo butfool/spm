@@ -4,9 +4,10 @@ import { isInside, sourcesDir } from "../config.js";
 import { exists, isDirectory, isSymlink, linkPointsTo, readLink } from "../fsutil.js";
 import { SpmError } from "../errors.js";
 import { skippedLine, type SkippedSkill } from "./discover.js";
-import { installDirsFor } from "./install.js";
+import { installDirsFor, ownedLinkTarget } from "./install.js";
 import type { Manifest } from "./manifest.js";
 import { declarationConflict, repositoryLayers } from "./registry.js";
+import { describeLocal } from "./source.js";
 import {
   expandSelections,
   resolveManifestEntries,
@@ -49,6 +50,26 @@ export async function diagnose(
   void opts;
 
   const layers = repositoryLayers(manifest, scope.manifestDir, scope.kind === "global");
+
+  // 0. A local repository must be a directory of skills. A directory holding
+  // SKILL.md is one skill, and `path:` coordinates exist so that such a
+  // directory needs no registration at all. A registry entry that predates
+  // that rule reports here, because nothing else looks at it again: the
+  // registration is already in place, so no code path ever re-checks the path.
+  for (const decl of layers.local.values()) {
+    const registered = describeLocal(decl.name);
+    if (registered === null || registered.target === null) continue;
+    if (!exists(path.join(registered.target, "SKILL.md"))) continue;
+
+    issues.push({
+      level: "error",
+      kind: "repository_is_a_skill",
+      message: `local repository "${decl.name}" points at a skill directory: ${registered.target}`,
+      fix:
+        `Declare it as \`path:${registered.target}\` instead, and drop the registration ` +
+        `with \`spm repository remove ${decl.name}\`.`,
+    });
+  }
 
   // 1. The two declaration layers must agree about a name. A repository whose
   // directory is gone is reported by the resolution step below, which is the
@@ -186,8 +207,7 @@ export async function diagnose(
       if (desired.has(name)) continue;
 
       const entryPath = path.join(dir, name);
-      const link = readLink(entryPath);
-      if (link === null || !isInside(link, sourcesDir())) continue;
+      if (ownedLinkTarget(entryPath) === null) continue;
 
       issues.push({
         level: "warning",

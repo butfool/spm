@@ -130,7 +130,7 @@ function repositoryRemove(name: string): void {
   } else {
     info(
       dim(
-        `  a project manifest still declares it — \`spm i\` there will register it again`,
+        `  the global skills.yaml does not declare it — a project that names it will register it again`,
       ),
     );
   }

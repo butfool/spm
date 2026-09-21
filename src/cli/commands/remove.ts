@@ -1,5 +1,9 @@
 import type { Command } from "commander";
-import { tryParseCoordinate, type Coordinate } from "../../core/coordinate.js";
+import {
+  tryParseCoordinate,
+  isRepositoryCoordinate,
+  type RepositoryCoordinate,
+} from "../../core/coordinate.js";
 import { discoverSkills } from "../../core/discover.js";
 import { installDirsFor, installSkills } from "../../core/install.js";
 import {
@@ -61,7 +65,9 @@ export async function runRemove(
       missing.push(spec);
       continue;
     }
-    const count = removeSkillEntries(manifest, (entry) => coordinateMatches(entry, target));
+    const count = removeSkillEntries(manifest, (entry) =>
+      coordinateMatches(entry, target, scope.manifestDir),
+    );
     if (count === 0) {
       missing.push(spec);
       continue;
@@ -116,7 +122,10 @@ function pruneUnusedDeclarations(manifest: Manifest): string[] {
   const used = new Set(
     manifest.skills
       .map((entry) => tryParseCoordinate(entry))
-      .filter((coordinate): coordinate is Coordinate => coordinate?.type === "local")
+      .filter(
+        (coordinate): coordinate is RepositoryCoordinate =>
+          coordinate !== null && coordinate.type === "local",
+      )
       .map((coordinate) => coordinate.repository),
   );
 
@@ -171,8 +180,8 @@ function findCoveringEntry(manifest: Manifest, spec: string): string | null {
   const wholeRepositories = manifest.skills
     .map((entry) => tryParseCoordinate(entry))
     .filter(
-      (coordinate): coordinate is Coordinate =>
-        coordinate !== null && coordinate.skill === "*",
+      (coordinate): coordinate is RepositoryCoordinate =>
+        coordinate !== null && isRepositoryCoordinate(coordinate) && coordinate.skill === "*",
     );
 
   for (const coordinate of wholeRepositories) {

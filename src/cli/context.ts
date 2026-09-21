@@ -1,6 +1,7 @@
 import path from "node:path";
 import type { SkippedSkill } from "../core/discover.js";
 import { manifestExists, readManifest, type Manifest } from "../core/manifest.js";
+import { assertNoProjectAliases, emptyManifest } from "../core/registry.js";
 import {
   expandSelections,
   globalScope,
@@ -44,13 +45,18 @@ export function loadManifest(
           : "Run `spm init` to create one.",
       );
     }
-    return { manifest: { installDirs: [], repositories: {}, skills: [] }, existed: false };
+    return { manifest: emptyManifest(), existed: false };
   }
 
   const manifest = readManifest(scope.manifestDir);
   if (manifest === null) {
     throw new SpmError(`no skills.yaml in ${scope.manifestDir}`);
   }
+
+  // Checked here rather than in the reader, because only the caller knows
+  // which manifest this is: a project that declares aliases would have them
+  // silently ignored, since the alias table is read from the global manifest.
+  assertNoProjectAliases(manifest, scope.kind === "global");
   return { manifest, existed: true };
 }
 

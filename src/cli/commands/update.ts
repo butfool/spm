@@ -1,9 +1,9 @@
 import type { Command } from "commander";
-import { tryParseCoordinate, type Coordinate } from "../../core/coordinate.js";
+import { tryParseCoordinate } from "../../core/coordinate.js";
 import { discoverSkills } from "../../core/discover.js";
 import { readRepoManifest } from "../../core/repo-manifest.js";
 import { repositoryLayers } from "../../core/registry.js";
-import { isKnownLocal, parseSpecTarget } from "../../core/resolve.js";
+import { expandAlias, isKnownLocal, parseSpecTarget, unknownAliasError } from "../../core/resolve.js";
 import { listSources, refreshGithub } from "../../core/source.js";
 import { dim, info, success, warn } from "../../log.js";
 import { loadManifest, scopeFrom, type GlobalOptions } from "../context.js";
@@ -51,13 +51,21 @@ async function selectGithubRepositories(
   const layers = repositoryLayers(manifest, scope.manifestDir, scope.kind === "global");
 
   if (specs.length === 0) {
-    const repos = new Set(
-      manifest.skills
-        .map((entry) => tryParseCoordinate(entry))
-        .filter((coordinate): coordinate is Coordinate => coordinate !== null)
-        .filter((coordinate) => coordinate.type === "github")
-        .map((coordinate) => coordinate.repository),
-    );
+    const repos = new Set<string>();
+    for (const entry of manifest.skills) {
+      const coordinate = tryParseCoordinate(entry);
+      if (coordinate === null) continue;
+
+      if (coordinate.type === "alias") {
+        const expanded = expandAlias(coordinate.name);
+        if (expanded?.coordinate.type === "github") {
+          repos.add(expanded.coordinate.repository);
+        }
+        continue;
+      }
+
+      if (coordinate.type === "github") repos.add(coordinate.repository);
+    }
     return [...repos].sort();
   }
 
@@ -66,8 +74,21 @@ async function selectGithubRepositories(
     const target = parseSpecTarget(spec, (name) => isKnownLocal(name, layers));
 
     if (target.kind === "coordinate") {
-      if (target.coordinate.type === "github") {
-        wanted.add(target.coordinate.repository);
+      const coordinate = target.coordinate;
+      if (coordinate.type === "github") {
+        wanted.add(coordinate.repository);
+      } else if (coordinate.type === "alias") {
+        // An alias is only worth following when it reaches a github
+        // repository; anything else has nothing to fetch.
+        const expanded = expandAlias(coordinate.name);
+        if (expanded === null) throw unknownAliasError(coordinate.name);
+        if (expanded.coordinate.type === "github") {
+          wanted.add(expanded.coordinate.repository);
+        } else {
+          info(dim(`${spec}: nothing to fetch`));
+        }
+      } else if (coordinate.type === "path") {
+        info(dim(`${spec}: a local directory, nothing to fetch`));
       } else {
         info(dim(`${spec}: local repository, nothing to fetch`));
       }

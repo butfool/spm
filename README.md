@@ -37,8 +37,10 @@ npm link        # or: npm install -g .
 **Manifest** — `skills.yaml`, either in a project (alongside `package.json`) or
 global at `~/.config/spm/skills.yaml`. `-g` selects the global one.
 
-**Repository** — a directory of skills. There are two kinds, and the difference
-decides whether it needs registering:
+**Repository** — a directory of skills. A directory containing `SKILL.md` is a
+skill rather than a repository, so it is never registered; it is installed by
+path instead. There are two kinds of repository, and the difference decides
+whether it needs registering:
 
 | Kind | Identity | Registered? |
 | --- | --- | --- |
@@ -55,6 +57,25 @@ Registering a local repository symlinks it into
 `~/.config/spm/sources/local/<name>`; the directory itself is never modified. A
 github repository is cloned into `~/.config/spm/sources/github/<owner>/<repo>`,
 following the remote's default branch, and needs no declaration at all.
+
+**Registration is what extends the search scope.** A registered repository is
+what `spm find` searches and what a bare skill name is looked up in, which is
+why a skill directory that needs no searching needs no registration either.
+
+**Alias** — a machine-level name for one skill, kept in the global manifest's
+`aliases:` section. It exists so several projects can install the same skill
+without repeating where it lives, and without adding anything to the search
+scope:
+
+```yaml
+aliases:
+  md-lint: path:~/Code/ButCool/md-lint/skills/md-lint
+  notion-api: github:intellectronica/agent-skills:notion-api
+```
+
+A project then writes `alias:md-lint`. An alias installs nothing by itself —
+what gets installed is decided by each manifest's `skills:` list — and it names
+exactly one skill. Naming a whole repository is what `repositories:` is for.
 
 **Skills are leaves.** A directory containing `SKILL.md` *is* a skill, and
 discovery stops there — a skill's own `references/` or `scripts/` folders are
@@ -74,6 +95,7 @@ content, never skills.
 | `spm doctor [--fix]` | | Check the manifest against disk |
 | `spm update [spec...]` | `up` | Re-fetch github repositories, then relink |
 | `spm repository add\|remove\|list` | `repo` | Manage the machine-level registry |
+| `spm alias add\|remove\|list` | | Manage the machine-level names for single skills |
 | `spm config` | | Show resolved paths and settings |
 
 Useful flags: `-g/--global`, `-f/--force`, `-n/--name` (the name to register a
@@ -82,8 +104,8 @@ read-only commands.
 
 ## Coordinates
 
-A skill is named by three colon-separated segments, the way Gradle names a
-dependency:
+A skill from a repository is named by three colon-separated segments, the way
+Gradle names a dependency:
 
 ```
 <type>:<repository>:<skill>
@@ -100,6 +122,49 @@ The type segment is what keeps the two kinds apart: a repository name can never
 contain a slash, so `local:Obsidian:x` and `github:a/b:x` cannot be confused,
 and a mistyped type is an error rather than a surprise.
 
+A skill that is its own directory is named by that directory instead:
+
+```
+path:<directory>
+```
+
+| Form | Meaning |
+| --- | --- |
+| `path:~/Code/md-lint/skills/md-lint` | the one skill that directory holds |
+| `path:../shared/skills/pdf-fill` | the same, relative to the manifest |
+
+A path coordinate names exactly one directory with `SKILL.md` at its root. It
+registers nothing, so it never shows up in `spm find` or in bare-name lookup,
+and the skill name comes from that `SKILL.md`. A directory holding several
+skills is a repository: `spm repository add` it, or name one of its skills.
+
+A skill this machine already has a name for is named by that name:
+
+```
+alias:<name>
+```
+
+| Form | Meaning |
+| --- | --- |
+| `alias:md-lint` | whatever the global manifest's `aliases:` says that is |
+
+An alias is the machine-level counterpart of a path coordinate: it exists so a
+project can name a skill that lives outside every repository without repeating
+an absolute path. It carries no claim about where the skill lives, so it points
+at a github repository just as well as at a directory. Bare names never reach
+it — a repository name and an alias are two tables, and only the type segment
+tells them apart:
+
+```
+local:md-lint   the repository registered under that name
+local:md-lint:* every skill it holds
+alias:md-lint   the single skill the alias table names
+```
+
+`spm add ./path` picks the right form by itself: a directory holding `SKILL.md`
+becomes a path coordinate, anything else is registered as a repository (with
+`-n/--name` when you want to choose the name).
+
 The command line accepts a shortened form, because `owner/repo` carries a slash
 a repository name never has, and a bare name is only treated as a repository
 when this machine already knows it:
@@ -108,10 +173,12 @@ when this machine already knows it:
 | --- | --- |
 | `Obsidian:pdf-fill`, `Obsidian:*`, `Obsidian` | local repository (when the name is known) |
 | `owner/repo:pdf-fill`, `owner/repo:*`, `owner/repo` | github repository |
-| `./path`, `~/path`, `/abs/path` | a local directory, registered on the fly |
+| `path:~/x/skills/pdf` | that directory |
+| `alias:md-lint` | that machine-level name |
+| `./path`, `~/path`, `/abs/path` | a skill directory, or a repository registered on the fly |
 | `pdf-fill` | a skill looked up across every registered repository |
 
-Whatever you type, the manifest gets the full three-segment form. A bare skill
+Whatever you type, the manifest gets the full canonical form. A bare skill
 name that matches in more than one repository is an error listing the
 candidates, rather than a guess.
 
@@ -155,8 +222,49 @@ skills:
 several agents at once. Every declared skill is linked into every listed
 directory.
 
-A local `path` resolves against the directory its manifest sits in, so a
-project moves together with the repositories it names. `~` expands to `$HOME`.
+A skill directory that belongs to no repository is written down as it was
+given, so the manifest reads as a list of the skills you meant:
+
+```yaml
+skills:
+  - path:~/Code/ButCool/md-lint/skills/md-lint
+  - local:Obsidian:obsidian-tasks
+```
+
+An alias moves that path into the global manifest, where one copy serves every
+project:
+
+```yaml
+# ~/.config/spm/skills.yaml
+installDirs:
+  - .agents/skills
+repositories:
+  Obsidian:
+    type: local
+    path: ~/Code/Skills/Obsidian
+aliases:
+  md-lint: path:~/Code/ButCool/md-lint/skills/md-lint
+skills:
+  - alias:md-lint
+```
+
+```yaml
+# <project>/skills.yaml
+installDirs:
+  - .agents/skills
+skills:
+  - alias:md-lint
+```
+
+`aliases:` is machine-level, so a project manifest that declares one is an
+error: `spm alias add` writes to the global manifest, and `spm alias list`
+shows the table. Its values follow the same relative-path rules as
+`repositories:` paths — resolved against the file that holds them, which for
+the global manifest means `$HOME`.
+
+A local `path`, in either a `repositories:` entry or a `path:` coordinate,
+resolves against the directory its manifest sits in, so a project moves
+together with the repositories it names. `~` expands to `$HOME`.
 
 There is **no version solving**, and no ref pinning: SKILL.md files don't
 depend on each other, so the manifest is a flat list, and a github repository
@@ -195,6 +303,11 @@ sourcesDir: sources
 
 Set `SPM_HOME` to relocate the whole thing (used by the test suite).
 
+`sourcesDir` holds one entry per source: `local/<name>` and
+`github/<owner>/<repo>` for repositories, and `path/<hash>` for the skill
+directories `path:` coordinates point at. Only the first two are searched;
+`path/` exists so that every link spm makes points into the cache.
+
 ## How reconciliation works
 
 `spm install` computes the target set from the manifest and, for every
@@ -211,6 +324,10 @@ your own working copy, is outside that rule and is left alone.
 
 That's the whole model: no ref-counting, no ownership table. "Is this link
 spm's?" is answered by asking whether its target lives in the source cache.
+Which is why a `path:` coordinate also goes through the cache:
+`~/.config/spm/sources/path/<hash>` is a symlink to your directory, the install
+link points at that, and the rule keeps working without a second way to decide
+who owns a link.
 
 ## When a SKILL.md can't be used
 

@@ -2,6 +2,7 @@ import { Command } from "commander";
 import { SpmError } from "../errors.js";
 import { error, hint, setQuiet } from "../log.js";
 import { registerAddCommand } from "./commands/add.js";
+import { registerAliasCommand } from "./commands/alias.js";
 import { registerConfigCommand } from "./commands/config.js";
 import { registerDoctorCommand } from "./commands/doctor.js";
 import { registerFindCommand } from "./commands/find.js";
@@ -38,6 +39,7 @@ export function buildProgram(): Command {
   registerFindCommand(program);
   registerInfoCommand(program);
   registerRepositoryCommand(program);
+  registerAliasCommand(program);
   registerDoctorCommand(program);
   registerUpdateCommand(program);
   registerConfigCommand(program);

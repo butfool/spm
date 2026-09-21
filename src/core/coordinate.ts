@@ -12,11 +12,31 @@ export const REPOSITORY_TYPES = ["local", "github"] as const;
 export type RepositoryType = (typeof REPOSITORY_TYPES)[number];
 
 /**
- * Names a repository may not take. Both are spelled the way a coordinate's
- * type segment is spelled, so allowing them would make shorthand specifiers
- * such as `local` ambiguous.
+ * The prefix of a coordinate that names a skill directory directly, without a
+ * repository and without registering anything.
  */
-const RESERVED_NAMES = new Set<string>(REPOSITORY_TYPES);
+export const PATH_TYPE = "path";
+
+/**
+ * The prefix of a coordinate that names a skill by a name the machine defines.
+ *
+ * Unlike `local:`, this carries no claim about where the skill lives — the
+ * alias table in the global manifest answers that — so it still tells the
+ * truth when it points at a github repository.
+ */
+export const ALIAS_TYPE = "alias";
+
+/** Every form a coordinate can take, in the order the hint lists them. */
+export const COORDINATE_TYPES = [...REPOSITORY_TYPES, PATH_TYPE, ALIAS_TYPE] as const;
+
+export type CoordinateType = (typeof COORDINATE_TYPES)[number];
+
+/**
+ * Names a repository may not take. Every coordinate type is spelled the way a
+ * coordinate's first segment is spelled, so allowing one would make shorthand
+ * specifiers such as `local`, and the `path:` form itself, ambiguous.
+ */
+const RESERVED_NAMES = new Set<string>(COORDINATE_TYPES);
 
 /** The character set skill discovery accepts. */
 const SKILL_NAME = /^[a-z0-9._-]+$/;
@@ -32,7 +52,10 @@ export const WHOLE_REPOSITORY = "*";
 
 /** Shown wherever a malformed coordinate is reported. */
 export const COORDINATE_HINT =
-  "A coordinate reads <local|github>:<repository>:<skill>, for example local:mine:pdf-fill or github:owner/repo:*. Use * to name every skill in a repository.";
+  "A coordinate reads <local|github>:<repository>:<skill>, for example " +
+  "local:mine:pdf-fill or github:owner/repo:*, or path:<directory> for a skill " +
+  "directory no repository holds, or alias:<name> for a name the global " +
+  "skills.yaml defines. Use * to name every skill in a repository.";
 
 /**
  * A skill named together with the repository it comes from.
@@ -41,7 +64,7 @@ export const COORDINATE_HINT =
  * where the repository lives, the repository identifies it, and the skill says
  * what to install from it.
  */
-export interface Coordinate {
+export interface RepositoryCoordinate {
   type: RepositoryType;
   /** A local repository name, or `owner/name` for a github repository. */
   repository: string;
@@ -49,30 +72,103 @@ export interface Coordinate {
   skill: string;
 }
 
+/**
+ * A skill named by the directory holding it.
+ *
+ * No repository is involved: the directory is the skill. That is only true of
+ * a directory with SKILL.md at its root, which is why this form neither needs
+ * nor creates a registration, and why it is not part of `spm find`'s search
+ * scope.
+ */
+export interface PathCoordinate {
+  type: typeof PATH_TYPE;
+  /** The directory, as written in the manifest. */
+  dir: string;
+}
+
+/**
+ * A skill named by the machine's alias table.
+ *
+ * An alias names exactly one skill. It is a machine-level statement, kept in
+ * the global manifest, so several projects can install the same skill without
+ * repeating where it lives — and without the name joining any search scope.
+ */
+export interface AliasCoordinate {
+  type: typeof ALIAS_TYPE;
+  /** The alias name. */
+  name: string;
+}
+
+export type Coordinate = RepositoryCoordinate | PathCoordinate | AliasCoordinate;
+
 export function isRepositoryType(value: string): value is RepositoryType {
   return (REPOSITORY_TYPES as readonly string[]).includes(value);
 }
 
+/** Narrows to the coordinates that name a repository. */
+export function isRepositoryCoordinate(
+  coordinate: Coordinate,
+): coordinate is RepositoryCoordinate {
+  return coordinate.type === "local" || coordinate.type === "github";
+}
+
 export function formatCoordinate(coordinate: Coordinate): string {
+  if (coordinate.type === PATH_TYPE) return `${PATH_TYPE}:${coordinate.dir}`;
+  if (coordinate.type === ALIAS_TYPE) return `${ALIAS_TYPE}:${coordinate.name}`;
   return `${coordinate.type}:${coordinate.repository}:${coordinate.skill}`;
 }
 
-/** The repository prefix of a coordinate: `local:mine`, `github:owner/repo`. */
+/**
+ * The key that groups coordinates by the place they install from: `local:mine`
+ * or `github:owner/repo` for a repository, `path:<directory>` for a skill
+ * directory, `alias:<name>` for a machine-level name. Coordinates sharing a key
+ * are alternatives within one source.
+ */
 export function repositoryKey(coordinate: Coordinate): string {
+  if (coordinate.type === PATH_TYPE) return `${PATH_TYPE}:${coordinate.dir}`;
+  if (coordinate.type === ALIAS_TYPE) return `${ALIAS_TYPE}:${coordinate.name}`;
   return `${coordinate.type}:${coordinate.repository}`;
 }
 
 export function namesWholeRepository(coordinate: Coordinate): boolean {
-  return coordinate.skill === WHOLE_REPOSITORY;
+  return isRepositoryCoordinate(coordinate) && coordinate.skill === WHOLE_REPOSITORY;
 }
 
-/** Whether `name` can identify a locally registered repository. */
-export function validRepositoryName(name: string): boolean {
+/**
+ * Whether `dir` can be the value of a `path:` coordinate.
+ *
+ * The directory is resolved exactly like a repository `path` is, so relative
+ * values and `~` are fine. The one value refused is `*`: a path coordinate
+ * names one directory, and there is no such thing as every skill of a
+ * directory that is itself a skill.
+ */
+export function validPathValue(dir: string): boolean {
+  return dir.trim() !== "" && dir.trim() !== WHOLE_REPOSITORY;
+}
+
+/**
+ * Whether `name` can identify a locally registered repository or an alias.
+ *
+ * Both become one segment of a coordinate, and both are usable as a bare name,
+ * so they follow one rule: the character set that survives both, no leading
+ * dot, and nothing that is already a coordinate type.
+ */
+function usableName(name: string): boolean {
   return (
     REPOSITORY_NAME.test(name) &&
     !name.startsWith(".") &&
     !RESERVED_NAMES.has(name)
   );
+}
+
+/** Whether `name` can identify a locally registered repository. */
+export function validRepositoryName(name: string): boolean {
+  return usableName(name);
+}
+
+/** Whether `name` can be defined as an alias. */
+export function validAliasName(name: string): boolean {
+  return usableName(name);
 }
 
 /** Whether `repo` has the `owner/name` shape a github coordinate requires. */
@@ -93,15 +189,53 @@ export type CoordinateParse =
   | { ok: false; reason: string };
 
 /**
- * Parses `<type>:<repository>:<skill>`.
+ * Parses a coordinate.
  *
- * Nothing that may appear in any segment can contain a colon, so splitting on
- * every colon gives exactly three segments. Returning the reason instead of
- * throwing lets the manifest schema report which entry is wrong.
+ * Two shapes reach this reader. `<local|github>:<repository>:<skill>` holds no
+ * colon in any segment, so splitting on every colon gives exactly three
+ * segments. `path:<directory>` takes everything after the first colon, so a
+ * directory containing a colon survives intact. Returning the reason instead
+ * of throwing lets the manifest schema report which entry is wrong.
+ */
+/**
+ * Parses a coordinate.
+ *
+ * Three shapes reach this reader. `<local|github>:<repository>:<skill>` holds
+ * no colon in any segment, so splitting on every colon gives exactly three
+ * segments. `path:<directory>` and `alias:<name>` take everything after the
+ * first colon, because a directory may legally contain a colon. Returning the
+ * reason instead of throwing lets the manifest schema report which entry is
+ * wrong.
  */
 export function readCoordinate(text: string): CoordinateParse {
   const trimmed = text.trim();
   const segments = trimmed.split(":");
+  const head = segments[0]!;
+
+  // `path:<directory>` takes everything after the first colon as the
+  // directory, because a directory may legally contain a colon. Splitting on
+  // every colon would silently truncate such a path.
+  if (head === PATH_TYPE) {
+    const dir = trimmed.slice(PATH_TYPE.length + 1);
+    if (!validPathValue(dir)) {
+      return {
+        ok: false,
+        reason: `"${dir}" is not a usable directory — a path coordinate names one skill directory`,
+      };
+    }
+    return { ok: true, coordinate: { type: PATH_TYPE, dir } };
+  }
+
+  if (head === ALIAS_TYPE) {
+    const name = trimmed.slice(ALIAS_TYPE.length + 1);
+    if (!validAliasName(name)) {
+      return {
+        ok: false,
+        reason: `"${name}" is not a usable alias name — letters, digits, dots, dashes and underscores, not starting with a dot, and not local, github, path or alias`,
+      };
+    }
+    return { ok: true, coordinate: { type: ALIAS_TYPE, name } };
+  }
 
   if (segments.length !== 3) {
     return {
@@ -115,7 +249,7 @@ export function readCoordinate(text: string): CoordinateParse {
   if (!isRepositoryType(type)) {
     return {
       ok: false,
-      reason: `unknown repository type "${type}" — expected ${REPOSITORY_TYPES.join(" or ")}`,
+      reason: `unknown coordinate type "${type}" — expected ${COORDINATE_TYPES.join(", ")}`,
     };
   }
 
@@ -125,7 +259,7 @@ export function readCoordinate(text: string): CoordinateParse {
         ok: false,
         reason:
           `"${repository}" is not a usable local repository name — ` +
-          "letters, digits, dots, dashes and underscores, not starting with a dot, and not local or github",
+          "letters, digits, dots, dashes and underscores, not starting with a dot, and not local, github, path or alias",
       };
     }
   } else if (!validGithubRepository(repository)) {

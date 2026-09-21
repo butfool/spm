@@ -9,7 +9,9 @@ import {
   namesWholeRepository,
   parseCoordinate,
   readCoordinate,
+  repositoryKey,
   tryParseCoordinate,
+  validAliasName,
   validRepositoryName,
   type Coordinate,
 } from "./coordinate.js";
@@ -49,6 +51,14 @@ export const ManifestSchema = z.strictObject({
    * machine-level registry.
    */
   repositories: z.record(z.string(), LocalRepositorySchema).default({}),
+  /**
+   * Machine-level names for single skills, keyed by the name a coordinate uses.
+   *
+   * An alias exists so a project can install a skill that lives outside every
+   * repository without repeating where it is. Its value must name one skill;
+   * naming a whole repository is `repositories:`'s job.
+   */
+  aliases: z.record(z.string(), z.string().min(1)).default({}),
   /** The declared skills, each a `<type>:<repository>:<skill>` coordinate. */
   skills: z.array(z.string().min(1)).default([]),
 });
@@ -91,6 +101,7 @@ export function readManifest(dir: string): Manifest | null {
   }
 
   checkRepositories(file, result.data);
+  checkAliases(file, result.data);
   checkCoordinates(file, result.data);
   return result.data;
 }
@@ -108,6 +119,44 @@ function checkRepositories(file: string, manifest: Manifest): void {
       `${file} declares the unusable repository name "${name}"`,
       "Names may contain letters, digits, dots, dashes and underscores, may not start with a dot, and may not be local or github.",
     );
+  }
+}
+
+/**
+ * An alias name becomes a coordinate segment, and its value must name exactly
+ * one skill. Both are checked here, so a hand-written manifest fails on the
+ * line that is wrong instead of at the first install.
+ */
+function checkAliases(file: string, manifest: Manifest): void {
+  for (const [name, target] of Object.entries(manifest.aliases)) {
+    if (!validAliasName(name)) {
+      throw new SpmError(
+        `${file} declares the unusable alias name "${name}"`,
+        "Names may contain letters, digits, dots, dashes and underscores, may not start with a dot, and may not be local, github, path or alias.",
+      );
+    }
+
+    const parsed = readCoordinate(target);
+    if (!parsed.ok) {
+      throw new SpmError(
+        `${file} declares the alias "${name}" as "${target}": ${parsed.reason}`,
+        COORDINATE_HINT,
+      );
+    }
+
+    if (parsed.coordinate.type === "alias") {
+      throw new SpmError(
+        `${file} declares the alias "${name}" as another alias`,
+        "An alias names a skill, not another name. Point it at the skill itself.",
+      );
+    }
+
+    if (namesWholeRepository(parsed.coordinate)) {
+      throw new SpmError(
+        `${file} declares the alias "${name}" as a whole repository: "${target}"`,
+        "An alias names one skill. Register a repository to name a directory of them.",
+      );
+    }
   }
 }
 
@@ -175,6 +224,15 @@ export function writeManifest(dir: string, manifest: Manifest): void {
     out["repositories"] = repositories;
   }
 
+  const aliasNames = Object.keys(manifest.aliases).sort();
+  if (aliasNames.length > 0) {
+    const aliases: Record<string, string> = {};
+    for (const name of aliasNames) {
+      aliases[name] = manifest.aliases[name]!;
+    }
+    out["aliases"] = aliases;
+  }
+
   if (manifest.skills.length > 0) {
     out["skills"] = [...manifest.skills].sort((a, b) => a.localeCompare(b));
   }
@@ -190,19 +248,21 @@ export function writeManifest(dir: string, manifest: Manifest): void {
  * and having both makes it unclear which one a reader should edit. So a
  * whole-repository entry subsumes the individual ones, and an individual entry
  * a whole-repository entry already covers is dropped.
+ *
+ * Subsumption only ever happens between coordinates of the same repository. A
+ * `path:` entry names one directory, so it can never stand for another
+ * coordinate.
  */
 export function addSkillEntry(manifest: Manifest, coordinate: Coordinate): boolean {
   const key = formatCoordinate(coordinate);
   if (manifest.skills.includes(key)) return false;
 
-  const sameRepository = (parsed: Coordinate | null): boolean =>
-    parsed !== null &&
-    parsed.type === coordinate.type &&
-    parsed.repository === coordinate.repository;
+  const sameSource = (parsed: Coordinate | null): boolean =>
+    parsed !== null && repositoryKey(parsed) === repositoryKey(coordinate);
 
   const covers = manifest.skills.some((entry) => {
     const parsed = tryParseCoordinate(entry);
-    return sameRepository(parsed) && parsed !== null && namesWholeRepository(parsed);
+    return parsed !== null && sameSource(parsed) && namesWholeRepository(parsed);
   });
 
   if (!namesWholeRepository(coordinate) && covers) {
@@ -211,7 +271,7 @@ export function addSkillEntry(manifest: Manifest, coordinate: Coordinate): boole
 
   if (namesWholeRepository(coordinate)) {
     manifest.skills = manifest.skills.filter(
-      (entry) => !sameRepository(tryParseCoordinate(entry)),
+      (entry) => !sameSource(tryParseCoordinate(entry)),
     );
   }
 
@@ -246,5 +306,12 @@ export function upsertRepository(
     return false;
   }
   manifest.repositories[name] = decl;
+  return true;
+}
+
+/** Registers an alias, reporting whether it changed. */
+export function upsertAlias(manifest: Manifest, name: string, target: string): boolean {
+  if (manifest.aliases[name] === target) return false;
+  manifest.aliases[name] = target;
   return true;
 }

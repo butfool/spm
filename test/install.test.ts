@@ -1,13 +1,15 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { spmHome } from "../src/config.js";
 import {
   installDirsFor,
   installSkills,
   inspectTargets,
   uninstallSkills,
 } from "../src/core/install.js";
-import { readManifest, type Manifest } from "../src/core/manifest.js";
+import { readManifest, writeManifest, type Manifest } from "../src/core/manifest.js";
 import {
   expandSelections,
   projectScope,
@@ -48,8 +50,22 @@ function setup(installDirs = [".agents/skills"], skills = ["local:fixture:*"]): 
   return {
     installDirs,
     repositories: { fixture: { type: "local", path: repo } },
+    aliases: {},
     skills,
   };
+}
+
+/**
+ * Writes the global manifest, which is where the alias table lives. The test
+ * home doubles as SPM_HOME, so `$HOME` and the manifest directory agree.
+ */
+function writeAliasTable(aliases: Record<string, string>): void {
+  writeManifest(spmHome(), {
+    installDirs: [],
+    repositories: {},
+    aliases,
+    skills: [],
+  });
 }
 
 async function link(manifest: Manifest): Promise<ReturnType<typeof installSkills>> {
@@ -141,6 +157,25 @@ describe("install", () => {
     expect(entries(path.join(project, ".agents/skills"))).toEqual(["alpha", "beta", "mine"]);
   });
 
+  it("prunes a link to a skill directory the manifest dropped", async () => {
+    // A `path:` coordinate links into the source cache like everything else,
+    // so dropping the declaration is enough to have the link cleaned up.
+    const lone = writeSkill(tmpdir("spm-lone"), "", "mine");
+    const manifest: Manifest = {
+      installDirs: [".agents/skills"],
+      repositories: {},
+      aliases: {},
+      skills: [`path:${lone}`],
+    };
+    await link(manifest);
+    expect(entries(path.join(project, ".agents/skills"))).toEqual(["mine"]);
+
+    const after = await link({ ...manifest, skills: [] });
+
+    expect(after.removed.map((r) => r.skillName)).toEqual(["mine"]);
+    expect(entries(path.join(project, ".agents/skills"))).toEqual([]);
+  });
+
   it("refuses to clobber a real directory, and reports it", async () => {
     const manifest = setup();
     fs.mkdirSync(path.join(project, ".agents/skills/alpha"), { recursive: true });
@@ -190,6 +225,7 @@ describe("install", () => {
     const manifest: Manifest = {
       installDirs: [".agents/skills"],
       repositories: { fixture: { type: "local", path: repo } },
+      aliases: {},
       skills: ["local:fixture:*"],
     };
     expect(describeLocal("fixture")).toBeNull();
@@ -204,6 +240,7 @@ describe("install", () => {
     const manifest: Manifest = {
       installDirs: [],
       repositories: { fixture: { type: "local", path: repo } },
+      aliases: {},
       skills: ["local:fixture:*"],
     };
 
@@ -263,6 +300,23 @@ describe("uninstallSkills", () => {
     expect(removed).toHaveLength(2);
     expect(entries(path.join(project, ".agents/skills"))).toEqual(["beta"]);
     expect(entries(path.join(project, ".claude/skills"))).toEqual(["beta"]);
+  });
+});
+
+describe("registerLocal", () => {
+  it("registers a directory of skills", () => {
+    expect(registerLocal(repo, "mine").status).toBe("created");
+    expect(describeLocal("mine")?.target).toBe(repo);
+  });
+
+  it("refuses a directory that is itself one skill", () => {
+    const lone = writeSkill(tmpdir("spm-lone-source"), "", "mine");
+
+    expect(() => registerLocal(lone, "mine")).toThrow(
+      /is a skill directory, not a repository/,
+    );
+    // Refused before anything was created.
+    expect(describeLocal("mine")).toBeNull();
   });
 });
 
@@ -340,9 +394,59 @@ describe("resolveSpec", () => {
     await expect(resolveSpec("beta", ctx())).rejects.toThrow(/exists in 2 repositories/);
   });
 
+  it("installs a skill directory inside a registered repository by path", async () => {
+    setup();
+
+    const selection = await resolveSpec(path.join(repo, "alpha"), ctx());
+
+    expect(selection.type).toBe("path");
+    expect(selection.entry).toBe(`path:${path.join(repo, "alpha")}`);
+    expect(selection.skills).toEqual(["alpha"]);
+    // Nothing is registered: the directory is the skill.
+    expect(selection.declaration).toBeNull();
+  });
+
+  it("refuses a path coordinate for a directory that is not a skill directory", async () => {
+    const plain = tmpdir("spm-plain");
+    writeSkill(plain, "one", "one");
+    writeSkill(plain, "two", "two");
+
+    await expect(resolveSpec(`path:${plain}`, ctx())).rejects.toThrow(
+      /is not a skill directory — it holds 2 skills/,
+    );
+    await expect(resolveSpec(`path:${path.join(plain, "nowhere")}`, ctx())).rejects.toThrow(
+      /is not a directory/,
+    );
+  });
+
+  it("refuses a path coordinate for a repository that happens to hold one skill", async () => {
+    const one = tmpdir("spm-one-skill");
+    writeSkill(one, "solo", "solo");
+
+    // The directory itself holds no SKILL.md, so it is a directory of skills
+    // however few they are.
+    const run = resolveSpec(`path:${one}`, ctx());
+
+    await expect(run).rejects.toThrow(/is not a skill directory — it holds 1 skill/);
+    await run.catch((err: SpmError) => {
+      expect(err.hint).toMatch(/spm repository add/);
+    });
+  });
+
+  it("refuses --name for a skill directory, which has no repository to name", async () => {
+    await expect(
+      resolveSpec(path.join(repo, "alpha"), { ...ctx(), name: "mine" }),
+    ).rejects.toThrow(/--name does not apply/);
+  });
+
   it("points at the enclosing repository instead of registering a subdirectory", async () => {
     setup();
-    await expect(resolveSpec(path.join(repo, "alpha"), ctx())).rejects.toThrow(
+    // A directory that is not itself a skill has no path form, so naming one
+    // inside a registered repository stays an error.
+    const nested = path.join(repo, "alpha", "references");
+    fs.mkdirSync(nested, { recursive: true });
+
+    await expect(resolveSpec(nested, ctx())).rejects.toThrow(
       /inside the registered local repository "fixture"/,
     );
   });
@@ -355,6 +459,7 @@ describe("resolveSpec", () => {
     const manifest: Manifest = {
       installDirs: [],
       repositories: { mine: { type: "local", path: elsewhere } },
+      aliases: {},
       skills: [],
     };
 
@@ -386,6 +491,89 @@ describe("resolveSpec", () => {
   });
 });
 
+describe("alias coordinates", () => {
+  it("installs the skill an alias names, recording the alias itself", async () => {
+    const lone = writeSkill(tmpdir("spm-alias-one"), "", "mine");
+    writeAliasTable({ mine: `path:${lone}` });
+
+    const selection = await resolveSpec("alias:mine", ctx());
+
+    expect(selection.type).toBe("alias");
+    expect(selection.id).toBe("mine");
+    expect(selection.entry).toBe("alias:mine");
+    expect(selection.label).toBe("alias:mine");
+    expect(selection.skills).toEqual(["mine"]);
+    // Nothing is registered and nothing is declared: the table answers.
+    expect(selection.declaration).toBeNull();
+  });
+
+  it("links the skill and stays idempotent", async () => {
+    const lone = writeSkill(tmpdir("spm-alias-two"), "", "mine");
+    writeAliasTable({ mine: `path:${lone}` });
+    const manifest: Manifest = {
+      installDirs: [".agents/skills"],
+      repositories: {},
+      aliases: {},
+      skills: ["alias:mine"],
+    };
+
+    const first = await link(manifest);
+    const second = await link(manifest);
+
+    expect(first.links[0]!.action).toBe("created");
+    expect(second.links[0]!.action).toBe("unchanged");
+    expect(entries(path.join(project, ".agents/skills"))).toEqual(["mine"]);
+    expect(readManifest(project)).toBeNull();
+  });
+
+  it("resolves a relative target against $HOME, not against the project", async () => {
+    const lone = writeSkill(path.join(os.homedir(), "aliased"), "", "mine");
+    writeAliasTable({ mine: "path:aliased" });
+
+    const selection = await resolveSpec("alias:mine", ctx());
+
+    expect(selection.skills).toEqual(["mine"]);
+    expect(fs.realpathSync(selection.root)).toBe(fs.realpathSync(lone));
+  });
+
+  it("names one skill out of a registered repository", async () => {
+    registerLocal(repo, "fixture");
+    writeAliasTable({ alpha: "local:fixture:alpha" });
+
+    const selection = await resolveSpec("alias:alpha", ctx());
+
+    expect(selection.type).toBe("alias");
+    expect(selection.skills).toEqual(["alpha"]);
+  });
+
+  it("reports an unknown alias with a way forward", async () => {
+    writeAliasTable({});
+
+    const run = resolveSpec("alias:ghost", ctx());
+
+    await expect(run).rejects.toThrow(/unknown alias "ghost"/);
+    await run.catch((err: SpmError) => {
+      expect(err.hint).toMatch(/spm alias add ghost/);
+    });
+  });
+
+  it("reports an alias whose target directory is gone", async () => {
+    writeAliasTable({ mine: "path:/nowhere/at/all" });
+
+    await expect(resolveSpec("alias:mine", ctx())).rejects.toThrow(/is not a directory/);
+  });
+
+  it("keeps an alias and a repository of the same name apart", async () => {
+    const lone = writeSkill(tmpdir("spm-alias-three"), "", "lone");
+    registerLocal(repo, "mine");
+    writeAliasTable({ mine: `path:${lone}` });
+
+    // Two tables, two namespaces: the type segment decides which one answers.
+    expect((await resolveSpec("local:mine:alpha", ctx())).skills).toEqual(["alpha"]);
+    expect((await resolveSpec("alias:mine", ctx())).skills).toEqual(["lone"]);
+  });
+});
+
 describe("expandSelections", () => {
   it("fails when the same skill name comes from two repositories", async () => {
     const twin = tmpdir("spm-twin");
@@ -399,7 +587,47 @@ describe("expandSelections", () => {
         one: { type: "local", path: repo },
         two: { type: "local", path: twin },
       },
+      aliases: {},
       skills: ["local:one:*", "local:two:*"],
+    };
+
+    await expect(
+      resolveManifestEntries(manifest, {
+        manifestDir: project,
+        global: false,
+        register: true,
+      }).then(expandSelections),
+    ).rejects.toThrow(/provided by two repositories/);
+  });
+
+  it("says so when two declarations reach the same skill directory", async () => {
+    registerLocal(repo, "fixture");
+    const manifest: Manifest = {
+      installDirs: [],
+      repositories: { fixture: { type: "local", path: repo } },
+      aliases: {},
+      // The same directory, named once through the repository and once
+      // directly. "Pick a repository" would be the wrong advice here.
+      skills: ["local:fixture:alpha", `path:${path.join(repo, "alpha")}`],
+    };
+
+    await expect(
+      resolveManifestEntries(manifest, {
+        manifestDir: project,
+        global: false,
+        register: true,
+      }).then(expandSelections),
+    ).rejects.toThrow(/declared twice for the same directory/);
+  });
+
+  it("keeps two different directories of the same skill name apart in the message", async () => {
+    registerLocal(repo, "fixture");
+    const twin = writeSkill(tmpdir("spm-twin-name"), "", "alpha");
+    const manifest: Manifest = {
+      installDirs: [],
+      repositories: { fixture: { type: "local", path: repo } },
+      aliases: {},
+      skills: ["local:fixture:alpha", `path:${twin}`],
     };
 
     await expect(
@@ -438,6 +666,7 @@ describe("expandSelections", () => {
     const manifest: Manifest = {
       installDirs: [],
       repositories: { "broken-source": { type: "local", path: onlyInvalid } },
+      aliases: {},
       skills: ["local:broken-source:*"],
     };
 

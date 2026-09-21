@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   formatCoordinate,
+  isRepositoryCoordinate,
   namesWholeRepository,
   parseCoordinate,
   readCoordinate,
   repositoryKey,
   tryParseCoordinate,
+  validAliasName,
+  validPathValue,
   validGithubRepository,
   validRepositoryName,
   validSkillSegment,
@@ -32,7 +35,49 @@ describe("parseCoordinate", () => {
   it("reads the whole-repository form", () => {
     const coordinate = parseCoordinate("local:mine:*");
     expect(namesWholeRepository(coordinate)).toBe(true);
-    expect(coordinate.skill).toBe("*");
+    expect(coordinate).toMatchObject({ skill: "*" });
+  });
+
+  it("reads a path coordinate as one directory, colons and all", () => {
+    expect(parseCoordinate("path:/x/skills/pdf")).toEqual({
+      type: "path",
+      dir: "/x/skills/pdf",
+    });
+    expect(parseCoordinate("path:~/Code/skills/pdf")).toEqual({
+      type: "path",
+      dir: "~/Code/skills/pdf",
+    });
+    // A directory may contain a colon; only the first one separates.
+    expect(parseCoordinate("path:/x/odd:name/skill")).toEqual({
+      type: "path",
+      dir: "/x/odd:name/skill",
+    });
+  });
+
+  it("rejects a path coordinate that names no single directory", () => {
+    expect(readCoordinate("path:").ok).toBe(false);
+    expect(readCoordinate("path:*").ok).toBe(false);
+    expect(readCoordinate("path:   ").ok).toBe(false);
+  });
+
+  it("reads an alias coordinate as one name", () => {
+    expect(parseCoordinate("alias:md-lint")).toEqual({ type: "alias", name: "md-lint" });
+    expect(parseCoordinate("alias:iWhaleCloud")).toEqual({
+      type: "alias",
+      name: "iWhaleCloud",
+    });
+  });
+
+  it("rejects an alias name that could not be a segment", () => {
+    // A colon here would make the coordinate ambiguous, unlike a path value,
+    // which is allowed to contain one.
+    expect(readCoordinate("alias:a:b").ok).toBe(false);
+    expect(readCoordinate("alias:").ok).toBe(false);
+    expect(readCoordinate("alias:*").ok).toBe(false);
+    expect(readCoordinate("alias:a/b").ok).toBe(false);
+    for (const reserved of ["local", "github", "path", "alias"]) {
+      expect(readCoordinate(`alias:${reserved}`).ok, reserved).toBe(false);
+    }
   });
 
   it("reports how many segments it saw", () => {
@@ -57,12 +102,12 @@ describe("parseCoordinate", () => {
   it("rejects an unknown type segment", () => {
     expect(readCoordinate("gitlab:mine:pdf-fill")).toEqual({
       ok: false,
-      reason: 'unknown repository type "gitlab" — expected local or github',
+      reason: 'unknown coordinate type "gitlab" — expected local, github, path, alias',
     });
   });
 
   it("rejects a local repository name that is not usable as a path segment", () => {
-    for (const name of ["../evil", ".hidden", "has space", "a/b", "local", "github"]) {
+    for (const name of ["../evil", ".hidden", "has space", "a/b", "local", "github", "path"]) {
       const result = readCoordinate(`local:${name}:pdf-fill`);
       expect(result.ok, name).toBe(false);
     }
@@ -95,20 +140,41 @@ describe("parseCoordinate", () => {
 
   it("returns null rather than throwing from the tolerant reader", () => {
     expect(tryParseCoordinate("mine")).toBeNull();
-    expect(tryParseCoordinate("local:mine:pdf")?.skill).toBe("pdf");
+    expect(tryParseCoordinate("local:mine:pdf")).toMatchObject({ skill: "pdf" });
+    expect(tryParseCoordinate("path:/x/y")).toMatchObject({ dir: "/x/y" });
   });
 });
 
 describe("formatting", () => {
   it("round-trips", () => {
-    for (const text of ["local:mine:*", "local:mine:pdf-fill", "github:a/b:c"]) {
+    for (const text of [
+      "local:mine:*",
+      "local:mine:pdf-fill",
+      "github:a/b:c",
+      "path:/x/skills/pdf",
+      "path:~/Code/skills/pdf",
+      "path:../shared/skills/pdf",
+      "alias:md-lint",
+    ]) {
       expect(formatCoordinate(parseCoordinate(text))).toBe(text);
     }
   });
 
-  it("derives the repository prefix", () => {
+  it("derives the prefix that groups coordinates by source", () => {
     expect(repositoryKey(parseCoordinate("github:a/b:c"))).toBe("github:a/b");
     expect(repositoryKey(parseCoordinate("local:mine:*"))).toBe("local:mine");
+    // A path coordinate is its own source, so the key is the whole coordinate.
+    expect(repositoryKey(parseCoordinate("path:/x/y"))).toBe("path:/x/y");
+    expect(repositoryKey(parseCoordinate("alias:pdf"))).toBe("alias:pdf");
+  });
+
+  it("never treats a path or alias coordinate as a whole repository", () => {
+    expect(namesWholeRepository(parseCoordinate("path:/x/y"))).toBe(false);
+    expect(namesWholeRepository(parseCoordinate("alias:pdf"))).toBe(false);
+    const parsed = parseCoordinate("path:/x/y");
+    expect(isRepositoryCoordinate(parsed)).toBe(false);
+    expect(isRepositoryCoordinate(parseCoordinate("alias:pdf"))).toBe(false);
+    expect(isRepositoryCoordinate(parseCoordinate("local:mine:*"))).toBe(true);
   });
 });
 
@@ -118,9 +184,30 @@ describe("name validation", () => {
     expect(validRepositoryName("zsm-skills")).toBe(true);
   });
 
-  it("reserves the two type words", () => {
+  it("reserves every coordinate type word", () => {
     expect(validRepositoryName("local")).toBe(false);
     expect(validRepositoryName("github")).toBe(false);
+    // Otherwise a repository named `path` would shadow the path form.
+    expect(validRepositoryName("path")).toBe(false);
+    expect(validRepositoryName("alias")).toBe(false);
+  });
+
+  it("uses one rule for repository names and alias names", () => {
+    for (const name of ["md-lint", "iWhaleCloud", "zsm-skills", "a.b_c"]) {
+      expect(validAliasName(name), name).toBe(true);
+    }
+    for (const name of [".hidden", "a/b", "has space", "", "alias", "path"]) {
+      expect(validAliasName(name), name).toBe(false);
+    }
+  });
+
+  it("accepts only a non-empty directory as a path value", () => {
+    expect(validPathValue("/x/y")).toBe(true);
+    expect(validPathValue("~/x")).toBe(true);
+    expect(validPathValue("../shared/skills/pdf")).toBe(true);
+    expect(validPathValue("")).toBe(false);
+    expect(validPathValue("   ")).toBe(false);
+    expect(validPathValue("*")).toBe(false);
   });
 
   it("requires owner/name for github", () => {
