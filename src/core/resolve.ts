@@ -30,7 +30,14 @@ import {
   type SkippedSkill,
 } from "./discover.js";
 import { manifestPath, type Manifest } from "./manifest.js";
-import { declarationPath, globalAliases, lookupLocalRepository, repositoryLayers, type RepositoryLayers } from "./registry.js";
+import {
+  declarationPath,
+  globalAliases,
+  lookupLocalRepository,
+  repositoryLayers,
+  repositoryPathText,
+  type RepositoryLayers,
+} from "./registry.js";
 import { readRepoManifest } from "./repo-manifest.js";
 import {
   defaultRepositoryName,
@@ -327,7 +334,9 @@ async function resolvePathSpec(
     entry: `${sourceLabel("local", name)}:${WHOLE_REPOSITORY}`,
     skills: "*",
     label: spec,
-    declaration: declared ? null : { name, path: spec },
+    declaration: declared
+      ? null
+      : { name, path: repositoryPathText(spec, abs, ctx.global) },
   };
 }
 

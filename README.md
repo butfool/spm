@@ -274,8 +274,14 @@ shows the table. Its values follow the same relative-path rules as
 the global manifest means `$HOME`.
 
 A local `path`, in either a `repositories:` entry or a `path:` coordinate,
-resolves against the directory its manifest sits in, so a project moves
-together with the repositories it names. `~` expands to `$HOME`.
+resolves against the base of the file that holds it: a project manifest against
+its own directory, the global one against `$HOME` — the same base its
+`installDirs` use — so a project moves together with the repositories it names.
+What gets written follows from that: a project manifest keeps the path as you
+typed it, while the global manifest records where the directory was added from
+relative to `$HOME` (`~/Code/Skills/Roles` for a directory under it, an
+absolute path otherwise), so the entry reads back as the same directory even
+though the command ran somewhere else. `~` expands to `$HOME`.
 
 There is **no version solving**, and no ref pinning: SKILL.md files don't
 depend on each other, so the manifest is a flat list, and a github repository

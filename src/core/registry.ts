@@ -1,5 +1,6 @@
 import os from "node:os";
-import { expandPath, spmHome } from "../config.js";
+import path from "node:path";
+import { expandPath, isInside, spmHome } from "../config.js";
 import { SpmError } from "../errors.js";
 import {
   upsertAlias,
@@ -95,6 +96,28 @@ export function lookupLocalRepository(
 /** The absolute path a declaration points at. */
 export function declarationPath(decl: DeclaredLocalRepository): string {
   return expandPath(decl.path, decl.baseDir);
+}
+
+/**
+ * The path text to record for a repository at `abs`.
+ *
+ * The text has to read back as the same directory. A project manifest resolves
+ * relative paths against its own directory, which is where the command ran, so
+ * what the user typed already reads back correctly. The global manifest
+ * resolves them against `$HOME`, which is rarely where the command ran, so
+ * there the path is re-expressed against the directory it will be read from.
+ */
+export function repositoryPathText(
+  spec: string,
+  abs: string,
+  global: boolean,
+): string {
+  if (!global) return spec;
+
+  const home = os.homedir();
+  if (abs === home) return "~";
+  if (isInside(abs, home)) return `~/${path.relative(home, abs)}`;
+  return abs;
 }
 
 /** True when both layers declare `name` at different paths. */

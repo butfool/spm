@@ -7,6 +7,7 @@ import { readRepoManifest } from "../../core/repo-manifest.js";
 import {
   declareRepository,
   globalRepositories,
+  repositoryPathText,
   undeclareRepository,
 } from "../../core/registry.js";
 import {
@@ -97,7 +98,9 @@ async function repositoryAdd(
   const skipped = skippedFrom(`local:${name}`, invalid);
 
   const result = registerLocal(abs, name);
-  const declared = declareRepository(name, target);
+  // The machine-level registry resolves relative paths against $HOME, so the
+  // path recorded is the one that reads back as this directory.
+  const declared = declareRepository(name, repositoryPathText(target, abs, true));
 
   const note =
     result.status === "unchanged" ? "(already registered)" : `→ ${displayPath(abs)}`;

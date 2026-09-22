@@ -105,6 +105,19 @@ function globalManifest(): string {
   return fs.readFileSync(path.join(home, "skills.yaml"), "utf8");
 }
 
+/**
+ * Makes the fake $HOME a canonical path, the way a real home directory is.
+ *
+ * `os.tmpdir()` sits behind the `/var` symlink on macOS, so a directory under
+ * it has two spellings. A command comparing the working directory against
+ * `$HOME` would read them as different places and record an absolute path.
+ */
+function canonicalHome(): string {
+  const real = fs.realpathSync(home);
+  process.env["HOME"] = real;
+  return real;
+}
+
 beforeEach(() => {
   ({ home } = useTempHome());
   project = tmpdir("spm-cli-project");
@@ -610,6 +623,57 @@ describe("reporting a skipped SKILL.md", () => {
     expect(clash.stderr).toMatch(/already declared in the global skills.yaml/);
     expect(globalManifest()).toContain(first);
     expect(fs.existsSync(path.join(home, "sources", "local", "mine"))).toBe(false);
+  });
+
+  it("repository add: records a path that reads back as the directory it ran in", async () => {
+    const root = canonicalHome();
+    const repo = path.join(root, "Code", "Roles");
+    writeSkill(repo, "good", "good");
+    process.chdir(repo);
+
+    const added = await spm("repository", "add", ".", "--name", "roles");
+
+    expect(added.code).toBe(0);
+    expect(globalManifest()).toMatch(/path: ['"]?~\/Code\/Roles/);
+  });
+
+  it("add -g: a relative path is stored against the directory that reads it", async () => {
+    const root = canonicalHome();
+    const repo = path.join(root, "Code", "Roles");
+    writeSkill(repo, "good", "good");
+    process.chdir(repo);
+
+    const added = await spm("add", ".", "-g");
+
+    expect(added.code).toBe(0);
+    expect(globalManifest()).toMatch(/path: ['"]?~\/Code\/Roles/);
+
+    // A machine holding only the manifest has to land on the same directory:
+    // resolving `.` against $HOME would register the home directory itself.
+    const link = path.join(home, "sources", "local", "Roles");
+    fs.rmSync(link);
+    const restored = await spm("i", "-g");
+
+    expect(restored.code).toBe(0);
+    expect(fs.realpathSync(link)).toBe(fs.realpathSync(repo));
+  });
+
+  it("add -g: a directory outside $HOME is stored as an absolute path", async () => {
+    const repo = tmpdir("spm-cli-outside-home");
+    writeSkill(repo, "good", "good");
+    process.chdir(repo);
+
+    const added = await spm("add", ".", "-g");
+
+    expect(added.code).toBe(0);
+    expect(globalManifest()).toMatch(/path: ['"]?\//);
+
+    const link = path.join(home, "sources", "local", path.basename(repo));
+    fs.rmSync(link);
+    const restored = await spm("i", "-g");
+
+    expect(restored.code).toBe(0);
+    expect(fs.realpathSync(link)).toBe(fs.realpathSync(repo));
   });
 
   it("repository list --json: keeps stdout parseable and still fails", async () => {
