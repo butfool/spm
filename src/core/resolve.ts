@@ -110,7 +110,7 @@ export interface ResolveContext {
   global: boolean;
   /** Register repositories on demand (install paths) or require them to exist. */
   register: boolean;
-  /** Repoint an already-registered repository. */
+  /** Refuse a github cache entry that is not a git checkout. */
   force?: boolean | undefined;
   /** Name to register a local directory under; defaults to its declared name. */
   name?: string | undefined;
@@ -311,13 +311,13 @@ async function resolvePathSpec(
   if (declared && canonical(declarationPath(declared)) !== canonical(abs)) {
     throw new SpmError(
       `local repository "${name}" already points at ${declared.path}`,
-      `Re-run with \`--name <other-name>\`, or repoint it with \`spm repository add ${spec} --name ${name} --force\`.`,
+      `Re-run with \`--name <other-name>\`, or remove the existing declaration for "${name}".`,
     );
   }
 
   if (ctx.register) {
     refuseUnusableDirectory(abs, name);
-    registerLocal(abs, name, ctx.force ?? false);
+    registerLocal(abs, name);
   }
 
   return {
@@ -551,7 +551,7 @@ async function resolveLocalCoordinate(
         `Run \`spm i\` to register it, or \`spm repository add ${declared.path} --name ${name}\`.`,
       );
     }
-    registerLocal(declarationPath(declared), name, ctx.force ?? false);
+    registerLocal(declarationPath(declared), name);
   }
 
   const source = describeLocal(name);

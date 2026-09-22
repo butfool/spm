@@ -16,11 +16,13 @@ import {
   localSourcePath,
   registerLocal,
   removeLocalSource,
+  repositoryNameConflict,
   type RegisteredSource,
 } from "../../core/source.js";
 import { SpmError } from "../../errors.js";
 import { bold, dim, heading, info, success, warn } from "../../log.js";
 import { displayPath } from "../context.js";
+import { askName, canPrompt } from "../prompt.js";
 import { failOnSkippedSkills } from "../report.js";
 
 /**
@@ -41,8 +43,7 @@ export function registerRepositoryCommand(program: Command): void {
     .description("register a local directory holding skills")
     .argument("<path>", "the directory to register")
     .option("-n, --name <name>", "name to register it under")
-    .option("-f, --force", "repoint a name that is already taken")
-    .action(async (target: string, opts: { name?: string; force?: boolean }) => {
+    .action(async (target: string, opts: { name?: string }) => {
       await repositoryAdd(target, opts);
     });
 
@@ -67,32 +68,35 @@ export function registerRepositoryCommand(program: Command): void {
 
 async function repositoryAdd(
   target: string,
-  opts: { name?: string; force?: boolean },
+  opts: { name?: string },
 ): Promise<void> {
   const abs = expandPath(target, process.cwd());
   if (!isDirectory(abs)) {
     throw new SpmError(`not a directory: ${abs}`);
   }
-  const name = opts.name ?? defaultRepositoryName(abs);
 
-  // Discover before registering, so a directory that exposes nothing usable is
-  // rejected without leaving a link behind.
+  // Discover before naming. A directory that exposes nothing usable is not a
+  // repository yet, so nobody should be asked to name it, and nothing should
+  // be left behind when the answer would have been useless anyway.
   const repo = readRepoManifest(abs);
   const { skills, invalid } = discoverSkills(abs, {
     exclude: repo.exclude,
     maxDepth: repo.maxDepth,
   });
-  const skipped = skippedFrom(`local:${name}`, invalid);
 
   if (skills.length === 0) {
-    failOnSkippedSkills(skipped);
+    const preview = opts.name ?? defaultRepositoryName(abs);
+    failOnSkippedSkills(skippedFrom(`local:${preview}`, invalid));
     throw new SpmError(
       `${abs} exposes no skills`,
       `No usable SKILL.md was found under ${displayPath(abs)}.`,
     );
   }
 
-  const result = registerLocal(abs, name, opts.force ?? false);
+  const name = await repositoryName(abs, opts);
+  const skipped = skippedFrom(`local:${name}`, invalid);
+
+  const result = registerLocal(abs, name);
   const declared = declareRepository(name, target);
 
   const note =
@@ -110,6 +114,45 @@ async function repositoryAdd(
   );
 
   failOnSkippedSkills(skipped);
+}
+
+/**
+ * The name the directory is registered under.
+ *
+ * The name is how every project will refer to this directory, so the directory
+ * name is only a starting point: `--name` answers the question up front, and
+ * without it an interactive run asks. A machine that cannot ask — a script or a
+ * CI job — has to answer for itself, because a name chosen on its behalf is a
+ * name nobody reviewed.
+ */
+async function repositoryName(
+  abs: string,
+  opts: { name?: string },
+): Promise<string> {
+  const fallback = opts.name ?? defaultRepositoryName(abs);
+
+  if (opts.name !== undefined) {
+    const conflict = repositoryNameConflict(opts.name, abs);
+    if (conflict !== null) {
+      throw new SpmError(conflict.message, conflict.hint);
+    }
+    return opts.name;
+  }
+
+  if (!canPrompt()) {
+    throw new SpmError(
+      `no name given for ${displayPath(abs)}`,
+      `Pass \`--name <name>\`, or run this in a terminal to be asked. The ` +
+        `directory name "${fallback}" is the default.`,
+    );
+  }
+
+  return askName({
+    label: `Register ${displayPath(abs)} as`,
+    fallback,
+    check: (candidate) =>
+      repositoryNameConflict(candidate, abs)?.message ?? null,
+  });
 }
 
 function repositoryRemove(name: string): void {

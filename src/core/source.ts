@@ -6,6 +6,8 @@ import { SpmError } from "../errors.js";
 import { canonical, ensureSymlink, exists, isDirectory, readLink } from "../fsutil.js";
 import { validGithubRepository, validRepositoryName } from "./coordinate.js";
 import * as git from "./git.js";
+import { MANIFEST_FILENAME } from "./manifest.js";
+import { declarationPath, globalRepositories } from "./registry.js";
 import { readRepoName } from "./repo-manifest.js";
 
 export type SourceKind = "local" | "github";
@@ -132,6 +134,63 @@ export function defaultRepositoryName(absPath: string): string {
   return readRepoName(absPath) ?? path.basename(absPath);
 }
 
+/** A name that cannot be used for a directory, and what to do about it. */
+export interface RepositoryNameConflict {
+  message: string;
+  hint?: string | undefined;
+}
+
+/**
+ * Why `name` cannot identify the directory at `abs`, or null when it can.
+ *
+ * A local repository's name is its machine-level identity: it is what every
+ * project refers to and what every installed link resolves through. Two
+ * directories cannot hold one name without one of them quietly taking over the
+ * other's meaning, so a name that already leads somewhere else is refused
+ * rather than reused.
+ */
+export function repositoryNameConflict(
+  name: string,
+  abs: string,
+): RepositoryNameConflict | null {
+  if (!validRepositoryName(name)) {
+    return {
+      message:
+        `"${name}" is not a usable repository name — use letters, digits, dots, ` +
+        "dashes and underscores, without a leading dot",
+    };
+  }
+
+  const registered = describeLocal(name);
+  if (
+    registered !== null &&
+    registered.target !== null &&
+    canonical(registered.target) !== canonical(abs)
+  ) {
+    return {
+      message: `local repository "${name}" is already registered`,
+      hint:
+        `It points at ${registered.target}. Register this directory under ` +
+        `another name, or forget the old one with \`spm repository remove ${name}\`.`,
+    };
+  }
+
+  const declared = globalRepositories().get(name);
+  if (
+    declared !== undefined &&
+    canonical(declarationPath(declared)) !== canonical(abs)
+  ) {
+    return {
+      message: `local repository "${name}" is already declared in the global ${MANIFEST_FILENAME}`,
+      hint:
+        `It points at ${declared.path}. Register this directory under another ` +
+        `name, or forget the old one with \`spm repository remove ${name}\`.`,
+    };
+  }
+
+  return null;
+}
+
 /**
  * Registers a local directory by symlinking it into the source cache. The
  * directory itself is never modified — that's the whole point of registering
@@ -142,12 +201,15 @@ export function defaultRepositoryName(absPath: string): string {
  * information and would let the same directory be reached twice under two
  * names. Such a directory is installed by path instead, which records no
  * source at all.
+ *
+ * A name already held by another directory is an error, never a silent
+ * rebinding: the name is the identity projects refer to, so it changes only
+ * when the user decides it should.
  */
 export function registerLocal(
   inputPath: string,
   name: string,
-  force = false,
-): { name: string; status: "created" | "unchanged" | "rebound" } {
+): { name: string; status: "created" | "unchanged" } {
   const abs = path.resolve(inputPath);
 
   if (!isDirectory(abs)) {
@@ -159,32 +221,17 @@ export function registerLocal(
       `A source is a directory of skills. Install this one with \`spm add path:${abs}\`, or register the directory above it.`,
     );
   }
-  if (!validRepositoryName(name)) {
-    throw new SpmError(
-      `"${name}" is not a usable repository name`,
-      "Names may contain letters, digits, dots, dashes and underscores, may not start with a dot, and may not be local, github or path.",
-    );
+
+  const conflict = repositoryNameConflict(name, abs);
+  if (conflict !== null) {
+    throw new SpmError(conflict.message, conflict.hint);
   }
 
   const entry = localSourcePath(name);
   fs.mkdirSync(localCacheDir(), { recursive: true });
 
   if (exists(entry)) {
-    const current = readLink(entry);
-    if (current !== null && canonical(current) === canonical(abs)) {
-      return { name, status: "unchanged" };
-    }
-    if (!force) {
-      throw new SpmError(
-        `local repository "${name}" is already registered`,
-        current !== null
-          ? `Currently points at ${current}. Re-run with --force to repoint it.`
-          : `${entry} is in the way. Remove it or pick another name.`,
-      );
-    }
-    fs.rmSync(entry, { recursive: true, force: true });
-    fs.symlinkSync(abs, entry);
-    return { name, status: "rebound" };
+    return { name, status: "unchanged" };
   }
 
   fs.symlinkSync(abs, entry);

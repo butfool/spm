@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { run } from "../src/cli/index.js";
 import { registerLocal } from "../src/core/source.js";
@@ -10,10 +11,44 @@ let project: string;
 let previousCwd: string;
 
 /**
+ * A terminal with a person behind it, standing in for stdin during one
+ * `spm()` call.
+ *
+ * Answers are handed over one at a time, each only after the question asking
+ * for it has been written, the way a terminal delivers them. Feeding every
+ * line at once would let readline swallow the answers that arrive while no
+ * question is pending. When the lines run out the input ends, the way Ctrl-D
+ * ends a real terminal.
+ */
+let fakeStdin: (PassThrough & { isTTY?: boolean | undefined }) | undefined;
+let pendingAnswers: string[] = [];
+let answered = 0;
+
+function ttyStream(lines: string[]): PassThrough & { isTTY?: boolean | undefined } {
+  const stream: PassThrough & { isTTY?: boolean | undefined } = new PassThrough();
+  stream.isTTY = true;
+  fakeStdin = stream;
+  pendingAnswers = lines;
+  answered = 0;
+  return stream;
+}
+
+/** Hands the next answer to the waiting terminal stream, or ends it. */
+function answer(chunk: string): void {
+  if (fakeStdin === undefined || !chunk.includes("Register")) return;
+  if (answered < pendingAnswers.length) fakeStdin.write(pendingAnswers[answered++]!);
+  else fakeStdin.end();
+}
+
+/**
  * Runs the CLI the way `src/cli.ts` does, capturing both output streams.
  *
  * `run` returns the exit code instead of setting `process.exitCode`, so the
  * assertions here read exactly what a shell would see.
+ *
+ * Unless a `ttyStream` was provided, stdin is made non-interactive: a test run
+ * is not a terminal, and a command that would ask a question has to say so
+ * rather than wait for an answer nobody can give.
  */
 async function spm(...args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
   const out: string[] = [];
@@ -22,7 +57,9 @@ async function spm(...args: string[]): Promise<{ code: number; stdout: string; s
   const stdout = vi
     .spyOn(process.stdout, "write")
     .mockImplementation((chunk: string | Uint8Array): boolean => {
-      out.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+      const text = typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+      out.push(text);
+      answer(text);
       return true;
     });
   const stderr = vi
@@ -32,10 +69,25 @@ async function spm(...args: string[]): Promise<{ code: number; stdout: string; s
       return true;
     });
 
+  const savedStdin = Object.getOwnPropertyDescriptor(process, "stdin");
+  const savedIsTTY = process.stdin.isTTY;
+  if (fakeStdin !== undefined) {
+    Object.defineProperty(process, "stdin", { value: fakeStdin, configurable: true });
+  } else {
+    (process.stdin as { isTTY?: boolean }).isTTY = false;
+  }
+
   try {
     const code = await run(["node", "spm", ...args]);
     return { code, stdout: out.join(""), stderr: err.join("") };
   } finally {
+    if (fakeStdin !== undefined && savedStdin !== undefined) {
+      Object.defineProperty(process, "stdin", savedStdin);
+      fakeStdin.end();
+      fakeStdin = undefined;
+    } else {
+      (process.stdin as { isTTY?: boolean }).isTTY = savedIsTTY;
+    }
     stdout.mockRestore();
     stderr.mockRestore();
   }
@@ -476,11 +528,88 @@ describe("reporting a skipped SKILL.md", () => {
     const repo = tmpdir("spm-cli-usable");
     writeSkill(repo, "good", "good");
 
-    const result = await spm("repository", "add", repo);
+    const result = await spm("repository", "add", repo, "--name", "usable");
 
     expect(result.code).toBe(0);
     expect(result.stdout).toContain("registered");
     expect(result.stderr).toBe("");
+  });
+
+  it("repository add: asks for the name and uses the answer", async () => {
+    const repo = path.join(tmpdir("spm-cli-asked"), "Obsidian");
+    writeSkill(repo, "good", "good");
+    ttyStream(["notes\n"]);
+
+    const result = await spm("repository", "add", repo);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("registered notes");
+    expect(globalManifest()).toContain("notes:");
+    expect(fs.existsSync(path.join(home, "sources", "local", "notes"))).toBe(true);
+    expect(fs.existsSync(path.join(home, "sources", "local", "Obsidian"))).toBe(false);
+  });
+
+  it("repository add: offers the directory name and accepts it on an empty answer", async () => {
+    const repo = path.join(tmpdir("spm-cli-default"), "Obsidian");
+    writeSkill(repo, "good", "good");
+    ttyStream(["\n"]);
+
+    const result = await spm("repository", "add", repo);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("registered Obsidian");
+    expect(result.stdout).toContain("[Obsidian]");
+    expect(fs.existsSync(path.join(home, "sources", "local", "Obsidian"))).toBe(true);
+  });
+
+  it("repository add: keeps asking while the name is taken", async () => {
+    const first = tmpdir("spm-cli-taken");
+    const second = path.join(tmpdir("spm-cli-taken-again"), "second");
+    writeSkill(first, "one", "one");
+    writeSkill(second, "two", "two");
+    await spm("repository", "add", first, "--name", "mine");
+
+    // The empty answer falls back to the directory name, which is free, so the
+    // taken name has to be replaced before the command can continue.
+    ttyStream(["mine\n", "\n"]);
+    const result = await spm("repository", "add", second);
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('local repository "mine" is already registered');
+    expect(result.stdout).toContain("registered second");
+    expect(globalManifest()).toContain("second:");
+  });
+
+  it("repository add: refuses to pick a name on a machine that cannot ask", async () => {
+    const repo = tmpdir("spm-cli-noname");
+    writeSkill(repo, "good", "good");
+
+    const result = await spm("repository", "add", repo);
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toMatch(/no name given/);
+    expect(result.stderr).toMatch(/--name/);
+    expect(fs.existsSync(path.join(home, "sources", "local"))).toBe(false);
+    expect(fs.existsSync(path.join(home, "skills.yaml"))).toBe(false);
+  });
+
+  it("repository add: refuses a name the global manifest already declares elsewhere", async () => {
+    const first = tmpdir("spm-cli-declared");
+    const second = tmpdir("spm-cli-declared-again");
+    writeSkill(first, "one", "one");
+    writeSkill(second, "two", "two");
+    await spm("repository", "add", first, "--name", "mine");
+
+    // A declaration can outlive its link: a hand-written global manifest, or a
+    // machine whose cache directory was cleared, looks exactly like this.
+    fs.rmSync(path.join(home, "sources", "local", "mine"));
+
+    const clash = await spm("repository", "add", second, "--name", "mine");
+
+    expect(clash.code).toBe(1);
+    expect(clash.stderr).toMatch(/already declared in the global skills.yaml/);
+    expect(globalManifest()).toContain(first);
+    expect(fs.existsSync(path.join(home, "sources", "local", "mine"))).toBe(false);
   });
 
   it("repository list --json: keeps stdout parseable and still fails", async () => {

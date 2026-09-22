@@ -33,7 +33,8 @@ spm repository add ~/Code/Skills/Obsidian --name Obsidian
 装出去的 skill 立刻跟着变。
 
 **目录路径不能充当标识**（路径会变、会被复制到别的机器），所以注册时必须给一个名字。
-名字与 `sources/local/` 下的一级目录名一一对应。
+名字与 `sources/local/` 下的一级目录名一一对应，并且由用户确认：默认值是
+`skill-repository.yaml` 的 `name`，没有则取目录名；重名或不可用时必须改名（见 §7.1）。
 
 ### github
 
@@ -195,7 +196,7 @@ YAML frontmatter（`---` 分隔，容忍 CRLF 和开头空行）：
 | `spm info <spec>` | | 单个 skill 详情 |
 | `spm doctor [--fix]` | | 清单 vs 磁盘一致性检查 |
 | `spm update [spec...]` | `up` | github 仓库重新拉取，然后重新链接 |
-| `spm repository add <path> [--name]` | | 把本地目录登记进全局清单 |
+| `spm repository add <path> [--name]` | | 把本地目录登记进全局清单，名字默认取目录名并可修改 |
 | `spm repository remove <name>` | `rm` | 从全局清单与缓存目录中移除 |
 | `spm repository list` | `ls` | 列出本机已注册的仓库 |
 | `spm alias add <name> <spec>` | | 给一个 skill 起一个机器级名字 |
@@ -205,13 +206,14 @@ YAML frontmatter（`---` 分隔，容忍 CRLF 和开头空行）：
 
 **全局选项**：`-g/--global`（作用于 `~/.config/spm/skills.yaml`）、`-q/--quiet`。
 
-**常用子选项**：`-f/--force`（覆盖非软链接条目、重新绑定已占用的仓库名）、`-n/--name`
+**常用子选项**：`-f/--force`（覆盖非软链接条目）、`-n/--name`
 （本地目录登记时使用的名字）、`--no-prune`、`--frozen`（只校验不写）、`--json`
 （只读命令）。
 
 **写入位置由命令决定**：
 
-- `spm repository add` 只写全局清单的 `repositories:` 段落，文件不存在时创建。
+- `spm repository add` 只写全局清单的 `repositories:` 段落，文件不存在时创建；登记的
+  名字由用户确认（见 §7.1）。
 - `spm alias add` 只写全局清单的 `aliases:` 段落，文件不存在时创建。
 - `spm add` 只写当前清单。坐标指向的本地仓库已经在全局清单里登记时，只写坐标，
   项目清单里不出现 `repositories:` 段落。
@@ -374,16 +376,28 @@ skill 名之间不会互相遮蔽，两者叫同一个名字也不报错（`loca
 ### 7.1 注册
 
 ```
-spm repository add <本地目录> --name <名字>
+spm repository add <本地目录> [--name <名字>]
+  →  确认名字（见下）
   →  ln -s <绝对路径>  <SPM_HOME>/sources/local/<名字>
   →  在全局清单的 repositories: 段落写一条 {type: local, path: <用户输入的原文>}
 ```
 
-校验目标存在且含至少一个 SKILL.md，发现放在建链接**之前**：目录不可用时不要留下垃圾链接。
-目标本身带 `SKILL.md` 时**拒绝登记**，并提示改用 `spm add path:<目录>`：一个目录不可能
-既是仓库又是 skill。`path` 原样保留用户的写法，读取时相对清单所在目录解析。
+名字就是仓库的机器级标识，所以注册时由用户确认名字：默认值是
+`skill-repository.yaml` 的 `name`，没有则取目录名；交互式运行时提问，回车接受默认值，
+输入别的名字即改用它。传了 `--name` 表示用户已经决定，不再提问。不能提问的环境（管道、
+CI）必须显式传 `--name`，否则报错退出：代替用户挑一个名字，等于没有人看过这个名字。
 
-**已经存在的名字指向别处时直接报错**，只有 `--force` 才允许重新绑定。不要静默覆盖。
+校验目标存在且含至少一个 SKILL.md，发现放在建链接**之前**：目录不可用时不要留下垃圾
+链接，也不为一个还不是仓库的目录询问名字。目标本身带 `SKILL.md` 时**拒绝登记**，并提示改
+用 `spm add path:<目录>`：一个目录不可能既是仓库又是 skill。`path` 原样保留用户的写法，
+读取时相对清单所在目录解析。
+
+**已经存在的名字指向别处时直接报错，没有强制重新绑定的开关。** 名字被占用有两种情形：
+缓存目录里已有 `sources/local/<名字>` 指向别的目录；全局清单的 `repositories:` 里
+`<名字>` 声明了别的路径。两种情形都拒绝登记并要求改名，提示语给出
+`spm repository remove <名字>` 作为忘掉旧名字的办法。交互式提问时被占用的名字连默认值
+一起被拒绝，必须输入新的名字。凡是会写进 `sources/local/` 的路径都走同一条判定，
+`spm add <本地目录>` 也一样。
 
 ### 7.2 缓存目录布局
 
@@ -561,6 +575,11 @@ TS7 的其他要求：`target` 最低 ES2015（`es5` 已移除）、`moduleResol
 # 机器级登记：把本地目录登记一次
 spm repository add ~/Code/Skills/Obsidian --name Obsidian
 spm repository list                       # → local:Obsidian，含 skill 数量与真实路径
+
+# 不加 --name：交互式询问名字，默认取目录名或 skill-repository.yaml 的 name
+# 名字已被别的目录占用时要求改名，回车不接受被占用的默认值
+# 非交互环境没有 --name 则报错退出，不替用户选名字
+spm repository add ~/Code/Skills/Pdf
 
 # 项目里只写坐标，路径不重复
 # skills.yaml: skills: [local:Obsidian:*, github:vercel-labs/agent-skills:*]

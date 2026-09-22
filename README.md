@@ -58,6 +58,17 @@ Registering a local repository symlinks it into
 github repository is cloned into `~/.config/spm/sources/github/<owner>/<repo>`,
 following the remote's default branch, and needs no declaration at all.
 
+**The name is the identity**, so `spm repository add` asks for it rather than
+guessing: the directory name — or the `name:` in the repository's own
+`skill-repository.yaml` — is offered as the starting answer, and you can accept
+it or type another one. A name that already leads to a different directory,
+whether through a `sources/local/<name>` entry or a declaration in the global
+manifest, is refused and the command keeps asking, because a name shared by two
+directories would quietly change what every project means by it. `--name`
+answers up front and skips the question; a script or a CI job, where nothing can
+answer, has to pass it, since the command fails rather than pick a name on its
+own.
+
 **Registration is what extends the search scope.** A registered repository is
 what `spm find` searches and what a bare skill name is looked up in, which is
 why a skill directory that needs no searching needs no registration either.
@@ -98,9 +109,9 @@ content, never skills.
 | `spm alias add\|remove\|list` | | Manage the machine-level names for single skills |
 | `spm config` | | Show resolved paths and settings |
 
-Useful flags: `-g/--global`, `-f/--force`, `-n/--name` (the name to register a
-local directory under), `--frozen` (verify without writing), `--json` on the
-read-only commands.
+Useful flags: `-g/--global`, `-f/--force` (overwrite an entry that blocks an
+install), `-n/--name` (the name to register a local directory under), `--frozen`
+(verify without writing), `--json` on the read-only commands.
 
 ## Coordinates
 
