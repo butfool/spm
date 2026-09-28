@@ -3,6 +3,7 @@ import type { Command } from "commander";
 import {
   DEFAULT_SETTINGS,
   globalManifestPath,
+  projectsDir,
   readSettings,
   settingsPath,
   sourcesDir,
@@ -25,6 +26,7 @@ export function registerConfigCommand(program: Command): void {
         spmHome: spmHome(),
         settingsFile: settingsPath(),
         globalManifest: globalManifestPath(),
+        projectsDir: projectsDir(),
         sourcesDir: sourcesDir(settings),
         installDirs: settings.installDirs,
       };
@@ -39,6 +41,7 @@ export function registerConfigCommand(program: Command): void {
       info(`  ${dim("home".padEnd(width))} ${displayPath(resolved.spmHome)}`);
       info(`  ${dim("settings".padEnd(width))} ${displayPath(resolved.settingsFile)}`);
       info(`  ${dim("manifest".padEnd(width))} ${displayPath(resolved.globalManifest)}`);
+      info(`  ${dim("projects".padEnd(width))} ${displayPath(resolved.projectsDir)}`);
       info(`  ${dim("sources".padEnd(width))} ${displayPath(resolved.sourcesDir)}`);
       info(`  ${dim("installDirs".padEnd(width))} ${resolved.installDirs.join(", ")}`);
 

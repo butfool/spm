@@ -105,13 +105,16 @@ content, never skills.
 | `spm info <spec>` | | Details for one skill |
 | `spm doctor [--fix]` | | Check the manifest against disk |
 | `spm update [spec...]` | `up` | Re-fetch github repositories, then relink |
+| `spm clean [--dry-run]` | | Remove source cache entries no manifest uses |
 | `spm repository add\|remove\|list` | `repo` | Manage the machine-level registry |
 | `spm alias add\|remove\|list` | | Manage the machine-level names for single skills |
 | `spm config` | | Show resolved paths and settings |
 
 Useful flags: `-g/--global`, `-f/--force` (overwrite an entry that blocks an
 install), `-n/--name` (the name to register a local directory under), `--frozen`
-(verify without writing), `--json` on the read-only commands.
+(verify without writing), `--json` on read-only and reporting commands. `spm
+clean` also accepts `--dry-run` and `--dry-run-code`; the latter previews and
+returns status 1 when removable entries exist.
 
 ## Coordinates
 
@@ -325,6 +328,12 @@ Set `SPM_HOME` to relocate the whole thing (used by the test suite).
 directories `path:` coordinates point at. Only the first two are searched;
 `path/` exists so that every link spm makes points into the cache.
 
+`<SPM_HOME>/projects/` holds symlinks to project `skills.yaml` files that have
+completed an install write. These links let `spm clean` evaluate every known
+project without scanning the machine. A missing project leaves a dangling root
+that the next clean removes. Read-only commands and `spm install --frozen` do
+not register projects.
+
 ## How reconciliation works
 
 `spm install` computes the target set from the manifest and, for every
@@ -339,12 +348,38 @@ Then it removes any symlink under an install directory that points into the spm
 source cache but is no longer declared. A link you made by hand, pointing at
 your own working copy, is outside that rule and is left alone.
 
-That's the whole model: no ref-counting, no ownership table. "Is this link
-spm's?" is answered by asking whether its target lives in the source cache.
-Which is why a `path:` coordinate also goes through the cache:
-`~/.config/spm/sources/path/<hash>` is a symlink to your directory, the install
-link points at that, and the rule keeps working without a second way to decide
-who owns a link.
+That's the whole link reconciliation model: no ref-counting, no ownership
+table. "Is this link spm's?" is answered by asking whether its target lives in
+the source cache. Which is why a `path:` coordinate also goes through the
+cache: `~/.config/spm/sources/path/<hash>` is a symlink to your directory, the
+install link points at that, and the rule keeps working without a second way to
+decide who owns a link.
+
+## Cleaning the source cache
+
+Every successful project-scoped install write records that project's manifest
+under `<SPM_HOME>/projects/`. `spm clean` reads the global manifest and every
+live project root, then classifies each `local`, `github`, and `path` cache
+entry as referenced, declared, unused, broken, or foreign.
+
+```bash
+spm clean --dry-run          # show roots and entries without writing
+spm clean --json             # clean and emit a machine-readable result
+spm clean --dry-run-code     # preview; status 1 when anything is removable
+spm clean                    # remove unreachable cache entries
+```
+
+A live `repositories:` declaration preserves its local cache link even when no
+skill currently uses it. Unused global repositories and aliases are reported
+with `spm repository remove` or `spm alias remove` commands; clean never edits
+the manifest. Broken entries that still have a declaration or reference are
+reported and preserved. Real files or directories found where a local or path
+cache symlink is expected are also preserved.
+
+Removing a local or path cache entry only unlinks the entry under `sources/`.
+The repository or skill directory it points to remains untouched. Every root
+manifest is parsed before deletion begins, so an invalid live manifest stops
+the command before it removes anything.
 
 ## When a SKILL.md can't be used
 

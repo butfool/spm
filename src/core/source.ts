@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { sourcesDir } from "../config.js";
 import { SpmError } from "../errors.js";
-import { canonical, ensureSymlink, exists, isDirectory, readLink } from "../fsutil.js";
+import { canonical, ensureSymlink, exists, isDirectory, isSymlink, readLink } from "../fsutil.js";
 import { validGithubRepository, validRepositoryName } from "./coordinate.js";
 import * as git from "./git.js";
 import { MANIFEST_FILENAME } from "./manifest.js";
@@ -11,6 +11,16 @@ import { declarationPath, globalRepositories } from "./registry.js";
 import { readRepoName } from "./repo-manifest.js";
 
 export type SourceKind = "local" | "github";
+export type CachedSourceKind = SourceKind | "path";
+
+export interface CachedSource {
+  kind: CachedSourceKind;
+  id: string;
+  path: string;
+  target: string | null;
+  managed: boolean;
+  healthy: boolean;
+}
 
 /**
  * A repository the machine can install from. It lives in one of two places
@@ -127,6 +137,95 @@ export async function listSources(): Promise<RegisteredSource[]> {
   }
 
   return out.sort((a, b) => a.kind.localeCompare(b.kind) || a.id.localeCompare(b.id));
+}
+
+/** Every physical cache entry, including path sources, broken links, and foreign entries. */
+export async function listCachedSources(): Promise<CachedSource[]> {
+  const out: CachedSource[] = [];
+
+  for (const name of readAllEntries(localCacheDir())) {
+    const entry = localSourcePath(name);
+    const managed = isSymlink(entry);
+    out.push({
+      kind: "local",
+      id: name,
+      path: entry,
+      target: managed ? readLink(entry) : null,
+      managed,
+      healthy: managed && isDirectory(entry),
+    });
+  }
+
+  for (const key of readAllEntries(pathCacheDir())) {
+    const entry = path.join(pathCacheDir(), key);
+    const managed = isSymlink(entry);
+    out.push({
+      kind: "path",
+      id: key,
+      path: entry,
+      target: managed ? readLink(entry) : null,
+      managed,
+      healthy: managed && isDirectory(entry),
+    });
+  }
+
+  for (const owner of readAllEntries(githubCacheDir())) {
+    const ownerPath = path.join(githubCacheDir(), owner);
+    if (!isDirectory(ownerPath) || isSymlink(ownerPath)) {
+      out.push(foreignGithubEntry(owner, ownerPath));
+      continue;
+    }
+
+    const repositories = readAllEntries(ownerPath);
+    if (repositories.length === 0) {
+      out.push(foreignGithubEntry(owner, ownerPath));
+      continue;
+    }
+
+    for (const repo of repositories) {
+      const id = `${owner}/${repo}`;
+      const entry = githubSourcePath(id);
+      const managed = isDirectory(entry) && !isSymlink(entry);
+      out.push({
+        kind: "github",
+        id,
+        path: entry,
+        target: null,
+        managed,
+        healthy: managed && (await git.currentCommit(entry)) !== null,
+      });
+    }
+  }
+
+  return out.sort((a, b) => a.kind.localeCompare(b.kind) || a.id.localeCompare(b.id));
+}
+
+/** Removes one cache entry after verifying its path and expected filesystem shape. */
+export function removeCachedSource(source: CachedSource): void {
+  if (!source.managed) {
+    throw new Error(`refusing to remove foreign cache entry ${source.path}`);
+  }
+
+  const expected = cachePathFor(source);
+  if (path.resolve(source.path) !== path.resolve(expected)) {
+    throw new Error(`cache entry path does not match its identity: ${source.path}`);
+  }
+
+  if (source.kind === "local" || source.kind === "path") {
+    if (!isSymlink(source.path)) {
+      throw new Error(`cache entry is no longer a symlink: ${source.path}`);
+    }
+    fs.unlinkSync(source.path);
+    return;
+  }
+
+  if (!isDirectory(source.path) || isSymlink(source.path)) {
+    throw new Error(`github cache entry is no longer a directory: ${source.path}`);
+  }
+  fs.rmSync(source.path, { recursive: true, force: true });
+
+  const ownerDir = path.dirname(source.path);
+  if (fs.readdirSync(ownerDir).length === 0) fs.rmdirSync(ownerDir);
 }
 
 /** The default name for a local repository: its own declaration, else the directory name. */
@@ -345,12 +444,35 @@ export function findEnclosingLocal(
   return null;
 }
 
+function foreignGithubEntry(id: string, entryPath: string): CachedSource {
+  return {
+    kind: "github",
+    id,
+    path: entryPath,
+    target: null,
+    managed: false,
+    healthy: false,
+  };
+}
+
+function cachePathFor(source: CachedSource): string {
+  switch (source.kind) {
+    case "local":
+      return localSourcePath(source.id);
+    case "github":
+      return githubSourcePath(source.id);
+    case "path":
+      return path.join(pathCacheDir(), source.id);
+  }
+}
+
 function readEntries(dir: string): string[] {
+  return readAllEntries(dir).filter((name) => !name.startsWith("."));
+}
+
+function readAllEntries(dir: string): string[] {
   try {
-    return fs
-      .readdirSync(dir)
-      .filter((name) => !name.startsWith("."))
-      .sort();
+    return fs.readdirSync(dir).sort();
   } catch {
     return [];
   }

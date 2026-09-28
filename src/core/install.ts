@@ -11,6 +11,7 @@ import {
   readLink,
 } from "../fsutil.js";
 import type { Manifest } from "./manifest.js";
+import { registerProjectManifest } from "./project-registry.js";
 import type { Scope, SkillTarget } from "./resolve.js";
 
 /** What happened to one target link during an install pass. */
@@ -78,6 +79,8 @@ export function installSkills(
   const removed = opts.prune === false
     ? []
     : pruneOrphans(installDirs, targets);
+
+  if (scope.kind === "project") registerProjectManifest(scope.manifestDir);
 
   return { links, removed, installDirs };
 }

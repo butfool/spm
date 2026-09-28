@@ -196,6 +196,7 @@ YAML frontmatter（`---` 分隔，容忍 CRLF 和开头空行）：
 | `spm info <spec>` | | 单个 skill 详情 |
 | `spm doctor [--fix]` | | 清单 vs 磁盘一致性检查 |
 | `spm update [spec...]` | `up` | github 仓库重新拉取，然后重新链接 |
+| `spm clean [--dry-run]` | | 按全局与项目清单根清理无人引用的 source 缓存 |
 | `spm repository add <path> [--name]` | | 把本地目录登记进全局清单，名字默认取目录名并可修改 |
 | `spm repository remove <name>` | `rm` | 从全局清单与缓存目录中移除 |
 | `spm repository list` | `ls` | 列出本机已注册的仓库 |
@@ -208,7 +209,8 @@ YAML frontmatter（`---` 分隔，容忍 CRLF 和开头空行）：
 
 **常用子选项**：`-f/--force`（覆盖非软链接条目）、`-n/--name`
 （本地目录登记时使用的名字）、`--no-prune`、`--frozen`（只校验不写）、`--json`
-（只读命令）。
+（只读与报告命令）。`spm clean` 另有 `--dry-run`（只预览）与 `--dry-run-code`
+（只预览，并在存在待清理项时返回非零退出码）。
 
 **写入位置由命令决定**：
 
@@ -467,6 +469,41 @@ spm alias add md-lint path:~/Code/ButCool/md-lint/skills/md-lint
 - 全局清单的 `skills:` 里还在用某个别名时，`spm alias remove` 拒绝删除并指出去掉那条
   声明：否则那份清单会变成无法解析的状态。
 
+### 7.5 项目清单根登记
+
+项目级安装写操作成功完成后，把该项目的 `skills.yaml` 登记为机器级清理根：
+
+```
+<SPM_HOME>/projects/<清单规范路径的哈希>  →  <项目>/skills.yaml
+```
+
+登记项是软链接，不使用数据库或引用计数。同一份清单重复安装时复用同一条链接。项目或清单
+删除后链接自然悬挂，不再构成清理根，并由下一次 `spm clean` 删除。`spm list`、普通
+`spm doctor` 等只读命令不登记；`spm install --frozen` 只校验，也不登记。项目级
+`install`、`add`、`remove`、`update` 与 `doctor --fix` 的共享安装写路径负责登记，全局
+scope 不登记。
+
+### 7.6 source 缓存清理
+
+`spm clean` 的根集合是全局清单加上 §7.5 中目标仍存在的全部项目清单。命令先读取并校验
+全部根，再进行任何删除；任一根无效时立即失败并保持缓存原样。它只从清单坐标计算可达性，
+不扫描安装结果反推清单：
+
+- `local:<名字>:<skill>` 标记 `sources/local/<名字>`；`repositories:` 声明本身也保留对应
+  local 缓存，避免自动破坏用户登记。
+- `github:<owner>/<repo>:<skill>` 标记对应 clone。
+- `path:<目录>` 按所属清单的路径基准计算哈希，标记对应 path 缓存。
+- `alias:<名字>` 标记该全局 alias 已使用，并展开其目标坐标继续标记。
+
+无人引用且没有声明保护的三类缓存都可删除。`local` 与 `path` 只删除缓存软链接，绝不删除
+链接目标的本地目录；缓存位置出现真实文件或目录时报告为 foreign 并保留。仍有引用或声明的
+失效软链接、无效 git checkout 报告为 broken 并保留。无人引用的全局 `repositories:` 和
+`aliases:` 只报告，给出 `spm repository remove` 或 `spm alias remove`，不自动改写清单。
+
+`spm clean --dry-run` 只预览；`--json` 输出根集合、每个缓存项的状态和动作；
+`--dry-run-code` 隐含预览，并在存在待清理缓存或悬挂根时返回非零退出码。默认清理模式即使
+发现并删除条目也成功退出。清理完成后再次执行必须零删除。
+
 ---
 
 ## 8. 明确不做的事
@@ -480,7 +517,7 @@ spm alias add md-lint path:~/Code/ButCool/md-lint/skills/md-lint
 | **给仓库起别名** | 仓库名只来自注册名或 `owner/name`。`aliases:` 的名字指向的是**一个 skill**，不是仓库，所以不会出现「同一个仓库两个名字」；要给整个仓库起名字就登记它 |
 | **github 仓库进注册表** | 路径本身就是标识，登记它等于把同一件事写两遍 |
 | **数据库** | 状态 = 清单 + 磁盘上的软链接。换台机器/换个同事，`git diff` 就能看全 |
-| **引用计数** | 判断"链接是不是 spm 建的"用 §6.3 那一条判据，不需要所有权表 |
+| **引用计数** | 安装链接用 §6.3 的归属判据；source 清理用 §7.5 的清单根集合做标记，不维护计数 |
 | **稳定 ID / UUID** | 改名是作者自己的事 |
 | **反向扫描** | 扫描已安装内容反推清单。npm 也没有，不是缺口 |
 | **group / 组合概念** | 整仓库安装 + 清单本身已够表达"一套 skill" |
@@ -648,6 +685,12 @@ spm doctor                                # → healthy，退出码 0
 14. **别名**：`alias:<名字>` 解析到表格里的目标、写回清单时仍是 `alias:<名字>`、
     同一个别名跑两次结果一致；未知别名报错并给出 `spm alias add`；项目清单里出现
     `aliases:` 被拒；别名不进裸名字查找也不进 `find`；别名与仓库名可以同名而不互相遮蔽
+15. **项目根登记**：项目级安装写操作幂等登记；全局、只读与 `--frozen` 不登记；项目删除后
+    悬挂根不参与标记并由 clean 清理；登记目录里的真实文件保持原样
+16. **source clean**：多项目共享缓存只要仍有一个根引用就保留；local、github、path 三类
+    无人引用缓存均清理；local/path 目标目录保持原样；全局 repository/alias 只报告；
+    broken 与 foreign 条目保持原样；无效根导致零删除；dry-run、JSON、dry-run-code 与二次
+    clean 的结果符合 §7.6
 
 ---
 

@@ -41,6 +41,11 @@ export function globalManifestPath(): string {
   return path.join(spmHome(), "skills.yaml");
 }
 
+/** Machine-level symlinks to project manifests that have completed an install write. */
+export function projectsDir(): string {
+  return path.join(spmHome(), "projects");
+}
+
 /** Absolute path of the directory holding all registered sources. */
 export function sourcesDir(settings?: Settings): string {
   const s = settings ?? readSettings();

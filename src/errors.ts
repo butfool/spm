@@ -13,3 +13,14 @@ export class SpmError extends Error {
     this.hint = hint;
   }
 }
+
+/** A deliberate CLI status with no additional diagnostic output. */
+export class CliExitError extends Error {
+  readonly code: number;
+
+  constructor(code: number) {
+    super(`CLI exited with status ${code}`);
+    this.name = "CliExitError";
+    this.code = code;
+  }
+}
