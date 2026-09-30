@@ -1,4 +1,5 @@
 import type { Command } from "commander";
+import { SpmError } from "../../errors.js";
 import { discoverSkills, skippedFrom, skippedLine } from "../../core/discover.js";
 import { readRepoManifest } from "../../core/repo-manifest.js";
 import { resolveSpec, sourceLabel } from "../../core/resolve.js";
@@ -19,7 +20,9 @@ export function registerInfoCommand(program: Command): void {
 
       const selection = await resolveSpec(spec, resolveContext(manifest, scope, { register: false }));
       if (selection.skills === "*") {
-        throw new Error(`"${spec}" names a whole repository — narrow it to a single skill`);
+        throw new SpmError(
+          `"${spec}" names a whole repository — narrow it to a single skill`,
+        );
       }
 
       const skillName = selection.skills[0]!;
@@ -36,7 +39,7 @@ export function registerInfoCommand(program: Command): void {
           skills.length > 0 ? `available: ${skills.map((s) => s.name).join(", ")}` : "",
           ...(skipped.length > 0 ? ["skipped:", ...skipped.map(skippedLine)] : []),
         ].filter((line) => line !== "");
-        throw new Error(
+        throw new SpmError(
           `skill "${skillName}" not found in ${selection.label}` +
             (details.length > 0 ? `\n  ${details.join("\n  ")}` : ""),
         );

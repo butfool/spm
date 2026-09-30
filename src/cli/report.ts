@@ -1,5 +1,6 @@
 import { skippedLine, type SkippedSkill } from "../core/discover.js";
 import type { LinkResult } from "../core/install.js";
+import { SpmError } from "../errors.js";
 import { cyan, dim, heading, info, skip, success, warn } from "../log.js";
 import { displayPath, relativeTo } from "./context.js";
 
@@ -50,7 +51,7 @@ export function report(
 export function failOnSkippedSkills(skipped: readonly SkippedSkill[]): void {
   if (skipped.length === 0) return;
   for (const item of skipped) warn(skippedLine(item));
-  throw new Error(
+  throw new SpmError(
     `${skipped.length} SKILL.md file${skipped.length === 1 ? "" : "s"} skipped — see above`,
   );
 }

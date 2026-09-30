@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { run } from "../src/cli/index.js";
+import { buildProgram, run } from "../src/cli/index.js";
 import { registerLocal } from "../src/core/source.js";
 import { clearHome, entries, tmpdir, useTempHome, writeSkill, writeSkillFile } from "./helpers.js";
 
@@ -128,6 +128,16 @@ beforeEach(() => {
 afterEach(() => {
   process.chdir(previousCwd);
   clearHome();
+});
+
+describe("the command line", () => {
+  it("reports the version from package.json", () => {
+    const pkg = JSON.parse(
+      fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+    ) as { version: string };
+
+    expect(buildProgram().version()).toBe(pkg.version);
+  });
 });
 
 describe("confining installs", () => {
@@ -750,9 +760,26 @@ describe("reporting a skipped SKILL.md", () => {
 
     // One root cause, one diagnosis: a declaration check plus a discovery
     // failure would report the same thing twice and make the totals lie.
+    expect(result.code).toBe(1);
     expect(result.stdout).toContain("1 error, 0 warnings");
     expect(result.stderr).toMatch(/local:gone:\* is not available/);
     expect(result.stderr).toContain("spm repository add <path> --name gone");
+  });
+
+  it("doctor: warnings alone leave the run successful", async () => {
+    const repo = tmpdir("spm-cli-warn");
+    writeSkill(repo, "good", "good");
+    writeManifest(
+      project,
+      `installDirs:\n  - .agents/skills\nskills:\n  - path:${path.join(repo, "good")}\n`,
+    );
+
+    const result = await spm("doctor");
+
+    // The install directory does not exist yet, which is a warning, not a
+    // failure: `spm i` creates it.
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("0 errors, 1 warning");
   });
 
   it("install: a manifest whose skills are all usable still succeeds", async () => {

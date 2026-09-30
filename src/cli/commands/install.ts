@@ -1,4 +1,5 @@
 import type { Command } from "commander";
+import { SpmError } from "../../errors.js";
 import { installDirsFor, installSkills } from "../../core/install.js";
 import { dim, heading, info, skip, success, warn } from "../../log.js";
 import { displayPath, loadManifest, reconcile, scopeFrom, type GlobalOptions } from "../context.js";
@@ -31,7 +32,10 @@ async function installCommand(specs: string[], opts: InstallOptions): Promise<vo
 
   if (specs.length > 0) {
     if (opts.frozen) {
-      throw new Error("--frozen cannot be combined with explicit specifiers");
+      throw new SpmError(
+        "--frozen cannot be combined with explicit specifiers",
+        "Run `spm install --frozen` to verify the manifest, or drop --frozen to install the specifiers.",
+      );
     }
     // `spm i <spec>` is `spm add <spec>` — declare, then reconcile.
     const { runAdd } = await import("./add.js");
@@ -102,7 +106,10 @@ async function reportFrozen(
   }
 
   if (problems > 0) {
-    throw new Error(`${problems} link${problems === 1 ? "" : "s"} out of date — run \`spm i\` to fix`);
+    throw new SpmError(
+      `${problems} link${problems === 1 ? "" : "s"} out of date`,
+      "Run `spm i` to fix them.",
+    );
   }
   success("everything is in sync");
 }

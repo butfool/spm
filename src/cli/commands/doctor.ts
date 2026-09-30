@@ -1,4 +1,5 @@
 import type { Command } from "commander";
+import { SpmError } from "../../errors.js";
 import { diagnose, type Issue } from "../../core/doctor.js";
 import { installSkills } from "../../core/install.js";
 import { dim, heading, info, success, warn } from "../../log.js";
@@ -39,11 +40,11 @@ export function registerDoctorCommand(program: Command): void {
       if (!opts.fix) {
         info("");
         info(dim("run `spm doctor --fix` to apply what spm can repair"));
-        failOnInvalidSkills(report.issues);
+        failOnRemainingErrors(report.issues, false);
         return;
       }
 
-      failOnInvalidSkills(await applyFix(manifest, scope));
+      failOnRemainingErrors(await applyFix(manifest, scope), true);
     });
 }
 
@@ -92,17 +93,17 @@ async function applyFix(
 }
 
 /**
- * Fails the command when a SKILL.md could not be used.
- *
- * This is the one doctor finding that also decides the exit code: the file has
- * to be fixed by hand, so a run that found one is not a healthy run. The other
- * issue classes keep the exit behaviour they had.
+ * Fails the command when errors remain, so continuous integration can gate on
+ * the exit code. Warnings alone leave the run successful.
  */
-function failOnInvalidSkills(issues: readonly Issue[]): void {
-  const invalid = issues.filter((i) => i.kind === "invalid_skill");
-  if (invalid.length === 0) return;
-  throw new Error(
-    `${invalid.length} SKILL.md file${invalid.length === 1 ? "" : "s"} skipped — see above`,
+function failOnRemainingErrors(issues: readonly Issue[], fixed: boolean): void {
+  const errors = issues.filter((i) => i.level === "error");
+  if (errors.length === 0) return;
+  throw new SpmError(
+    `${errors.length} error${errors.length === 1 ? "" : "s"} reported`,
+    fixed
+      ? "These need a manual fix — spm cannot repair them on its own."
+      : "Fix them, or run `spm doctor --fix` to apply what spm can repair.",
   );
 }
 
