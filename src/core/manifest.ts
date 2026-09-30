@@ -3,6 +3,7 @@ import path from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { z } from "zod";
 import { SpmError } from "../errors.js";
+import { writeFileAtomic } from "../fsutil.js";
 import {
   COORDINATE_HINT,
   formatCoordinate,
@@ -64,8 +65,6 @@ export const ManifestSchema = z.strictObject({
 });
 
 export type Manifest = z.infer<typeof ManifestSchema>;
-
-export const EMPTY_MANIFEST: Manifest = ManifestSchema.parse({});
 
 export function manifestPath(dir: string): string {
   return path.join(dir, MANIFEST_FILENAME);
@@ -237,7 +236,7 @@ export function writeManifest(dir: string, manifest: Manifest): void {
     out["skills"] = [...manifest.skills].sort((a, b) => a.localeCompare(b));
   }
 
-  fs.writeFileSync(manifestPath(dir), stringifyYaml(out, YAML_OUTPUT), "utf8");
+  writeFileAtomic(manifestPath(dir), stringifyYaml(out, YAML_OUTPUT));
 }
 
 /**

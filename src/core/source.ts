@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { isStrictlyInside, sourcesDir } from "../config.js";
 import { SpmError } from "../errors.js";
-import { canonical, ensureSymlink, exists, isDirectory, isSymlink, readLink } from "../fsutil.js";
+import { canonical, ensureSymlink, exists, isDirectory, isSymlink, readLink, symlink } from "../fsutil.js";
 import { validGithubRepository, validRepositoryName } from "./coordinate.js";
 import * as git from "./git.js";
 import { MANIFEST_FILENAME } from "./manifest.js";
@@ -352,7 +352,7 @@ export function registerLocal(
     return { name, status: "unchanged" };
   }
 
-  fs.symlinkSync(abs, entry);
+  symlink(abs, entry);
   return { name, status: "created" };
 }
 
@@ -422,14 +422,6 @@ export async function refreshGithub(repo: string): Promise<"updated" | "missing"
 /** Unregisters a local repository. Returns false when it wasn't registered. */
 export function removeLocalSource(name: string): boolean {
   const entry = localSourcePath(name);
-  if (!exists(entry)) return false;
-  fs.rmSync(entry, { recursive: true, force: true });
-  return true;
-}
-
-/** Removes a github clone. Returns false when it wasn't there. */
-export function removeGithubSource(repo: string): boolean {
-  const entry = githubSourcePath(repo);
   if (!exists(entry)) return false;
   fs.rmSync(entry, { recursive: true, force: true });
   return true;

@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import path from "node:path";
-import { isInside } from "./config.js";
 
 /** True if anything (file, dir, or dangling symlink) exists at `p`. */
 export function exists(p: string): boolean {
@@ -62,6 +61,35 @@ export function canonical(p: string): string {
 }
 
 /**
+ * Writes `contents` to `file` through a sibling temporary file, so a reader
+ * never sees a half-written manifest.
+ */
+export function writeFileAtomic(file: string, contents: string): void {
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, contents, "utf8");
+  fs.renameSync(tmp, file);
+}
+
+/**
+ * Creates a symlink to `target`.
+ *
+ * On Windows the link type has to be stated: `junction` for a directory, which
+ * needs no elevated privilege, and `file` otherwise. Every other platform
+ * ignores the argument.
+ */
+export function symlink(target: string, linkPath: string): void {
+  fs.symlinkSync(target, linkPath, linkType(target));
+}
+
+function linkType(target: string): "file" | "junction" {
+  try {
+    return fs.statSync(target).isDirectory() ? "junction" : "file";
+  } catch {
+    return "file";
+  }
+}
+
+/**
  * Idempotently makes `linkPath` a symlink to `target`.
  *
  * Returns what happened so callers can report accurately:
@@ -85,48 +113,10 @@ export function ensureSymlink(
     }
     if (linkPointsTo(linkPath, target)) return "unchanged";
     fs.unlinkSync(linkPath);
-    fs.symlinkSync(target, linkPath);
+    symlink(target, linkPath);
     return "replaced";
   }
 
-  fs.symlinkSync(target, linkPath);
+  symlink(target, linkPath);
   return "created";
-}
-
-/**
- * Removes a symlink at `linkPath`, but only when its target lives under one of
- * `ownedRoots`. This is what stops `spm rm` from deleting links the user (or
- * another tool) created by hand.
- *
- * Returns true when a link was removed.
- */
-export function removeOwnedSymlink(
-  linkPath: string,
-  ownedRoots: string[],
-): boolean {
-  const current = readLink(linkPath);
-  if (current === null) return false;
-  if (!ownedRoots.some((root) => isInside(current, root))) return false;
-  fs.unlinkSync(linkPath);
-  return true;
-}
-
-/** Reads directory entries, returning [] instead of throwing on ENOENT. */
-export function readDirNames(dir: string): string[] {
-  try {
-    return fs.readdirSync(dir);
-  } catch {
-    return [];
-  }
-}
-
-/**
- * Lists the skill-shaped entries in `dir`: names that are directories or
- * symlinks-to-directories. Used for listing install targets.
- */
-export function listSubdirectories(dir: string): string[] {
-  return readDirNames(dir).filter((name) => {
-    if (name.startsWith(".")) return false;
-    return isDirectory(path.join(dir, name));
-  });
 }
