@@ -68,27 +68,6 @@ export async function remoteUrl(dir: string): Promise<string | null> {
   }
 }
 
-/**
- * Extracts `owner/name` from any of the URL shapes git accepts:
- * https, ssh scp-style, and ssh:// URLs.
- */
-export function parseGithubRepo(url: string): string | null {
-  const scp = /^[^@/]+@[^:]+:(.+?)(?:\.git)?$/.exec(url);
-  if (scp) return cleanRepoPath(scp[1]!);
-
-  try {
-    const parsed = new URL(url);
-    return cleanRepoPath(parsed.pathname.replace(/^\//, ""));
-  } catch {
-    return null;
-  }
-}
-
-function cleanRepoPath(p: string): string | null {
-  const trimmed = p.replace(/\.git$/, "").replace(/\/+$/, "");
-  return /^[\w.-]+\/[\w.-]+$/.test(trimmed) ? trimmed : null;
-}
-
 export function githubUrl(repo: string): string {
   return `https://github.com/${repo}.git`;
 }

@@ -41,8 +41,8 @@ const RESERVED_NAMES = new Set<string>(COORDINATE_TYPES);
 /** The character set skill discovery accepts. */
 const SKILL_NAME = /^[a-z0-9._-]+$/;
 
-/** A github repository: `owner/name`. */
-const GITHUB_REPOSITORY = /^[\w.-]+\/[\w.-]+$/;
+/** One segment of a github `owner/name`. */
+const GITHUB_SEGMENT = /^[\w.-]+$/;
 
 /** A local repository name; it becomes one segment of the source cache path. */
 const REPOSITORY_NAME = /^[A-Za-z0-9._-]+$/;
@@ -171,9 +171,19 @@ export function validAliasName(name: string): boolean {
   return usableName(name);
 }
 
-/** Whether `repo` has the `owner/name` shape a github coordinate requires. */
+/**
+ * Whether `repo` has the `owner/name` shape a github coordinate requires.
+ *
+ * Each segment becomes a directory name under the source cache, so `.` and
+ * `..` are refused: either one resolves outside the cache and would let a
+ * manifest name an arbitrary directory as a github repository.
+ */
 export function validGithubRepository(repo: string): boolean {
-  return GITHUB_REPOSITORY.test(repo);
+  const segments = repo.split("/");
+  if (segments.length !== 2) return false;
+  return segments.every(
+    (segment) => segment !== "." && segment !== ".." && GITHUB_SEGMENT.test(segment),
+  );
 }
 
 /** Whether `skill` can appear as the third segment of a coordinate. */

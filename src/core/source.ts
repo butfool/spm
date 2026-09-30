@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
-import { sourcesDir } from "../config.js";
+import { isStrictlyInside, sourcesDir } from "../config.js";
 import { SpmError } from "../errors.js";
 import { canonical, ensureSymlink, exists, isDirectory, isSymlink, readLink } from "../fsutil.js";
 import { validGithubRepository, validRepositoryName } from "./coordinate.js";
@@ -61,7 +61,7 @@ export function pathCacheDir(): string {
 /** The cache entry for a skill directory installed by `path:`. */
 export function pathSourceEntry(dir: string): string {
   const key = createHash("sha256").update(canonical(dir)).digest("hex").slice(0, 16);
-  return path.join(pathCacheDir(), key);
+  return cacheEntry(pathCacheDir(), key);
 }
 
 /**
@@ -83,11 +83,30 @@ export function githubCacheDir(): string {
 }
 
 export function localSourcePath(name: string): string {
-  return path.join(localCacheDir(), name);
+  return cacheEntry(localCacheDir(), name);
 }
 
 export function githubSourcePath(repo: string): string {
-  return path.join(githubCacheDir(), repo);
+  return cacheEntry(githubCacheDir(), repo);
+}
+
+/**
+ * A path inside a cache directory, refusing one that escapes it.
+ *
+ * Source identifiers become path segments. Validation already keeps them free
+ * of slashes and refuses `.` and `..`, and this is the backstop that makes the
+ * guarantee local: an identifier that somehow slips through still cannot
+ * address a directory outside the cache.
+ */
+function cacheEntry(parent: string, name: string): string {
+  const resolved = path.resolve(parent, name);
+  if (!isStrictlyInside(resolved, parent)) {
+    throw new SpmError(
+      `"${name}" does not name a usable source cache entry`,
+      `A source name must stay inside ${parent}.`,
+    );
+  }
+  return resolved;
 }
 
 /** The cache path of a repository, whichever kind it is. */

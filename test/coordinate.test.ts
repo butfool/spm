@@ -216,6 +216,22 @@ describe("name validation", () => {
     expect(validGithubRepository("a/b/c")).toBe(false);
   });
 
+  it("refuses a github name whose segments would escape the source cache", () => {
+    // Each segment becomes a directory under the cache, so `.` and `..` would
+    // address a directory outside it.
+    for (const repo of ["../..", "owner/..", "../local", "./x", "owner/."]) {
+      expect(validGithubRepository(repo), repo).toBe(false);
+    }
+    expect(readCoordinate("github:../..:*")).toEqual({
+      ok: false,
+      reason: '"../.." is not a github repository — expected owner/name',
+    });
+  });
+
+  it("accepts a dot-prefixed segment that is not a traversal", () => {
+    expect(validGithubRepository("owner/.github")).toBe(true);
+  });
+
   it("accepts a star only as the whole-repository skill", () => {
     expect(validSkillSegment("*")).toBe(true);
     expect(validSkillSegment("pdf-fill")).toBe(true);
