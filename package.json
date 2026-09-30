@@ -2,18 +2,29 @@
   "name": "@butcool/spm",
   "version": "0.1.0",
   "description": "Declarative SKILL.md dependency manager for AI coding agents",
+  "author": "butcool <but.cool@foxmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/butfool/spm.git"
+  },
+  "homepage": "https://github.com/butfool/spm#readme",
+  "bugs": {
+    "url": "https://github.com/butfool/spm/issues"
+  },
   "type": "module",
   "bin": {
     "spm": "./dist/cli.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "src"
   ],
   "engines": {
     "node": ">=20.19"
   },
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.build.json && chmod +x dist/cli.js",
+    "prepare": "npm run build",
     "dev": "tsx src/cli.ts",
     "test": "vitest run",
     "test:watch": "vitest",
