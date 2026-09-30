@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
+import { isInside } from "../config.js";
 
 /** Recursion cap when a repository declares no `maxDepth`. */
 const DEFAULT_MAX_DEPTH = 5;
@@ -237,6 +238,9 @@ export function discoverSkills(
   opts: DiscoverOptions = {},
 ): DiscoveryResult {
   const root = path.resolve(rootDir);
+  // The root may itself be a symlink (a registered local repository is one),
+  // so containment is judged against its real location.
+  const realRoot = realpath(root) ?? root;
   const exclude = (opts.exclude ?? []).map(toPosix);
   const maxDepth = opts.maxDepth && opts.maxDepth > 0 ? opts.maxDepth : DEFAULT_MAX_DEPTH;
 
@@ -276,9 +280,19 @@ export function discoverSkills(
 
       const rel = toPosix(path.relative(root, path.join(dir, name)));
       if (isExcluded(rel, exclude)) continue;
-      if (!isDirectorySynced(path.join(dir, name))) continue;
 
-      walk(path.join(dir, name), depth + 1);
+      const child = path.join(dir, name);
+      if (!isDirectorySynced(child)) continue;
+
+      // A symlink may point anywhere. Following one out of the source root
+      // would let a repository make discovery walk the machine, so only a
+      // link that stays inside the root is descended into.
+      if (entry.isSymbolicLink()) {
+        const real = realpath(child);
+        if (real === null || !isInside(real, realRoot)) continue;
+      }
+
+      walk(child, depth + 1);
     }
   };
 
@@ -305,6 +319,15 @@ function isDirectorySynced(p: string): boolean {
     return fs.statSync(p).isDirectory();
   } catch {
     return false;
+  }
+}
+
+/** The real path of `p`, or null when it does not resolve. */
+function realpath(p: string): string | null {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return null;
   }
 }
 

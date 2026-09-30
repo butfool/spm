@@ -96,6 +96,27 @@ describe("discoverSkills", () => {
     expect(discoverSkills(root).skills.map((s) => s.name)).toEqual(["alpha"]);
   });
 
+  it("does not follow a symlink that leaves the source root", () => {
+    const root = tmpdir("spm-disc");
+    const outside = tmpdir("spm-outside");
+    writeSkill(root, "inside", "inside");
+    writeSkill(outside, "secret", "secret");
+    fs.symlinkSync(outside, path.join(root, "escape"));
+
+    expect(discoverSkills(root).skills.map((s) => s.name)).toEqual(["inside"]);
+  });
+
+  it("follows a symlink that stays inside the source root", () => {
+    const root = tmpdir("spm-disc");
+    // The target is reachable only through the link: `.hidden` is skipped when
+    // walked directly.
+    writeSkill(root, ".hidden/real", "only-via-link");
+    fs.mkdirSync(path.join(root, "alias"), { recursive: true });
+    fs.symlinkSync(path.join(root, ".hidden/real"), path.join(root, "alias/real"));
+
+    expect(discoverSkills(root).skills.map((s) => s.name)).toEqual(["only-via-link"]);
+  });
+
   it("records the path relative to the source root", () => {
     const root = tmpdir("spm-disc");
     writeSkill(root, "alpha", "alpha");
