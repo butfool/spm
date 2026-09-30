@@ -21,7 +21,7 @@ import {
   type RegisteredSource,
 } from "../../core/source.js";
 import { SpmError } from "../../errors.js";
-import { bold, dim, heading, info, success, warn } from "../../log.js";
+import { bold, dim, heading, info, success, warn, write } from "../../log.js";
 import { displayPath } from "../context.js";
 import { askName, canPrompt } from "../prompt.js";
 import { failOnSkippedSkills } from "../report.js";
@@ -241,9 +241,9 @@ async function repositoryList(opts: { json?: boolean }): Promise<void> {
     const width = Math.max(...sources.map((s) => `${s.kind}:${s.id}`.length), 4);
 
     for (const { source, count } of rows) {
-      process.stdout.write(
+      write(
         `  ${bold(`${source.kind}:${source.id}`.padEnd(width))}  ` +
-          `${String(count).padStart(3)} skills  ${where(source)}\n`,
+          `${String(count).padStart(3)} skills  ${where(source)}`,
       );
     }
   }

@@ -21,7 +21,7 @@ import {
 import { resolveSpec, sourceLabel } from "../../core/resolve.js";
 import { describeLocal } from "../../core/source.js";
 import { SpmError } from "../../errors.js";
-import { bold, dim, heading, info, success, warn } from "../../log.js";
+import { bold, dim, heading, info, success, warn, write } from "../../log.js";
 
 /**
  * `spm alias` manages the machine-level names for single skills.
@@ -213,8 +213,6 @@ function aliasList(opts: { json?: boolean }): void {
   const width = Math.max(...[...aliases.keys()].map((name) => name.length), 4);
 
   for (const alias of aliases.values()) {
-    process.stdout.write(
-      `  ${bold(alias.name.padEnd(width))}  ${alias.target}\n`,
-    );
+    write(`  ${bold(alias.name.padEnd(width))}  ${alias.target}`);
   }
 }

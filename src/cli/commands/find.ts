@@ -7,7 +7,7 @@ import {
 } from "../../core/discover.js";
 import { readRepoManifest } from "../../core/repo-manifest.js";
 import { listSources } from "../../core/source.js";
-import { bold, dim, heading, info } from "../../log.js";
+import { bold, dim, heading, info, write } from "../../log.js";
 import type { GlobalOptions } from "../context.js";
 import { failOnSkippedSkills } from "../report.js";
 
@@ -90,8 +90,8 @@ async function findCommand(query: string, opts: FindOptions): Promise<void> {
 
   for (const hit of hits) {
     const description = opts.all ? hit.skill.description : truncate(hit.skill.description, 90);
-    process.stdout.write(
-      `  ${bold(hit.skill.name.padEnd(nameWidth))}  ${dim(hit.label.padEnd(sourceWidth))}  ${description}\n`,
+    write(
+      `  ${bold(hit.skill.name.padEnd(nameWidth))}  ${dim(hit.label.padEnd(sourceWidth))}  ${description}`,
     );
   }
 

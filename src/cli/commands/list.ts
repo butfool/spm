@@ -1,7 +1,7 @@
 import type { Command } from "commander";
 import { installDirsFor, inspectTargets } from "../../core/install.js";
 import { manifestPath } from "../../core/manifest.js";
-import { dim, heading, info, warn } from "../../log.js";
+import { dim, heading, info, warn, write } from "../../log.js";
 import { displayPath, loadManifest, scopeFrom, type GlobalOptions } from "../context.js";
 import { failOnSkippedSkills } from "../report.js";
 
@@ -67,7 +67,7 @@ export function registerListCommand(program: Command): void {
         const bad = state.dirs.filter((d) => d.state !== "ok");
         const marker = bad.length === 0 ? dim("ok") : warnMarker(bad.length, state.dirs.length);
         const source = dim(state.source);
-        process.stdout.write(`  ${state.name.padEnd(width)}  ${marker}  ${source}\n`);
+        write(`  ${state.name.padEnd(width)}  ${marker}  ${source}`);
       }
 
       const broken = states.filter((s) => s.dirs.some((d) => d.state !== "ok"));
