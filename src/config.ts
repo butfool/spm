@@ -49,7 +49,17 @@ export function projectsDir(): string {
 /** Absolute path of the directory holding all registered sources. */
 export function sourcesDir(settings?: Settings): string {
   const s = settings ?? readSettings();
-  return path.resolve(spmHome(), s.sourcesDir);
+  const resolved = path.resolve(spmHome(), s.sourcesDir);
+  // The cache root is what answers "is this link spm's?" during pruning, so a
+  // value pointing outside SPM_HOME would widen that answer to the whole
+  // filesystem.
+  if (!isStrictlyInside(resolved, spmHome())) {
+    throw new SpmError(
+      `sourcesDir "${s.sourcesDir}" resolves outside the spm home directory: ${resolved}`,
+      `Set sourcesDir in ${settingsPath()} to a directory inside ${spmHome()}.`,
+    );
+  }
+  return resolved;
 }
 
 export function readSettings(): Settings {
@@ -104,6 +114,8 @@ export function expandPath(input: string, baseDir: string): string {
  * Resolves a manifest's installDirs into absolute paths, preserving order and
  * dropping duplicates. Falls back to the global settings, then to the
  * built-in default, so callers always get at least one directory.
+ *
+ * Every entry is confined to `baseDir`; see `assertInstallDirsInScope`.
  */
 export function resolveInstallDirs(
   declared: string[] | undefined,
@@ -112,6 +124,8 @@ export function resolveInstallDirs(
   const source =
     declared && declared.length > 0 ? declared : readSettings().installDirs;
   const effective = source.length > 0 ? source : DEFAULT_SETTINGS.installDirs;
+
+  assertInstallDirsInScope(effective, baseDir);
 
   const seen = new Set<string>();
   const out: string[] = [];
@@ -124,8 +138,33 @@ export function resolveInstallDirs(
   return out;
 }
 
+/**
+ * Refuses an install directory that resolves outside the scope's own tree.
+ *
+ * A committed manifest is untrusted input. Confining every install directory
+ * to the scope base is what stops a cloned repository from writing links into
+ * ~/.ssh or anywhere else on the machine.
+ */
+export function assertInstallDirsInScope(declared: string[], baseDir: string): void {
+  const root = path.resolve(baseDir);
+  for (const raw of declared) {
+    const abs = expandPath(raw, baseDir);
+    if (isInside(abs, root)) continue;
+    throw new SpmError(
+      `install directory ${abs} is outside ${root}`,
+      `Install directories must stay inside ${root}. Use a relative entry such as ".agents/skills".`,
+    );
+  }
+}
+
 /** True when `child` is `parent` itself or lives underneath it. */
 export function isInside(child: string, parent: string): boolean {
   const rel = path.relative(path.resolve(parent), path.resolve(child));
   return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+}
+
+/** True when `child` lives underneath `parent`, and is not `parent` itself. */
+export function isStrictlyInside(child: string, parent: string): boolean {
+  const rel = path.relative(path.resolve(parent), path.resolve(child));
+  return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
 }

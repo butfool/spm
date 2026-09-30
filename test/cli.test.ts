@@ -130,6 +130,41 @@ afterEach(() => {
   clearHome();
 });
 
+describe("confining installs", () => {
+  it("refuses a manifest that installs outside its own tree", async () => {
+    const repo = tmpdir("spm-cli-outside-repo");
+    writeSkill(repo, "ssh-persist", "authorized_keys");
+    const outside = tmpdir("spm-cli-outside");
+
+    // A committed manifest is untrusted input: it must not be able to write a
+    // link into ~/.ssh or anywhere else on the machine.
+    writeManifest(
+      project,
+      `installDirs:\n  - ${outside}\nskills:\n  - path:${path.join(repo, "ssh-persist")}\n`,
+    );
+
+    const result = await spm("install");
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toMatch(/is outside/);
+    expect(entries(outside)).toEqual([]);
+  });
+
+  it("refuses an inherited settings default that lies outside the project", async () => {
+    fs.writeFileSync(
+      path.join(home, "settings.yaml"),
+      'installDirs:\n  - "~/.agents/skills"\n',
+      "utf8",
+    );
+
+    const result = await spm("init");
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toMatch(/is outside/);
+    expect(fs.existsSync(path.join(project, "skills.yaml"))).toBe(false);
+  });
+});
+
 describe("the machine-level registry", () => {
   it("records a local repository in the global manifest and serves every project from it", async () => {
     const repo = tmpdir("spm-cli-registry");

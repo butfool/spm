@@ -2,8 +2,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { spmHome } from "../src/config.js";
+import { sourcesDir, spmHome } from "../src/config.js";
 import {
+  assertSaneInstallDirs,
   installDirsFor,
   installSkills,
   inspectTargets,
@@ -118,6 +119,18 @@ describe("install", () => {
   it("resolves relative install dirs against the manifest, not the cwd", () => {
     const manifest = setup(["nested/skills"]);
     expect(installDirsFor(manifest, scope)).toEqual([path.join(project, "nested/skills")]);
+  });
+
+  it("refuses an install dir outside the manifest's tree", () => {
+    const outside = tmpdir("spm-outside");
+    expect(() => installDirsFor(setup([outside]), scope)).toThrow(/is outside/);
+  });
+
+  it("refuses an install dir that overlaps the source cache, in either direction", () => {
+    expect(() => assertSaneInstallDirs([path.join(sourcesDir(), "skills")])).toThrow(
+      /overlaps the source cache/,
+    );
+    expect(() => assertSaneInstallDirs([spmHome()])).toThrow(/overlaps the source cache/);
   });
 
   it("removes a link the manifest no longer declares", async () => {

@@ -41,10 +41,13 @@ export interface InstallOptions {
 
 /**
  * The effective install directories for a scope: the manifest's own list when
- * it declares one, otherwise the global settings, otherwise the default.
+ * it declares one, otherwise the global settings, otherwise the default. Every
+ * directory is confined to the scope's tree and kept clear of the source cache.
  */
 export function installDirsFor(manifest: Manifest, scope: Scope): string[] {
-  return resolveInstallDirs(manifest.installDirs, scope.installBaseDir);
+  const installDirs = resolveInstallDirs(manifest.installDirs, scope.installBaseDir);
+  assertSaneInstallDirs(installDirs);
+  return installDirs;
 }
 
 /**
@@ -238,15 +241,20 @@ export function inspectTargets(
   }));
 }
 
-/** Guards against a manifest whose install dirs would swallow the sources tree. */
+/**
+ * Guards against an install directory that overlaps the source cache.
+ *
+ * Either direction is refused: a directory inside the cache would let the prune
+ * step walk the sources tree it is supposed to leave alone, and a directory
+ * containing the cache would treat the cache's own symlinks as undeclared.
+ */
 export function assertSaneInstallDirs(installDirs: string[]): void {
   const roots = sourcesDir();
   for (const dir of installDirs) {
-    if (isInside(roots, dir)) {
-      throw new SpmError(
-        `install directory ${dir} contains the source cache`,
-        `Installing there would link the sources tree into itself.`,
-      );
-    }
+    if (!isInside(dir, roots) && !isInside(roots, dir)) continue;
+    throw new SpmError(
+      `install directory ${dir} overlaps the source cache ${roots}`,
+      "Choose an install directory outside the source cache.",
+    );
   }
 }

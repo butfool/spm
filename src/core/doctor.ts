@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import path from "node:path";
-import { isInside, sourcesDir } from "../config.js";
 import { exists, isDirectory, isSymlink, linkPointsTo, readLink } from "../fsutil.js";
 import { SpmError } from "../errors.js";
 import { skippedLine, type SkippedSkill } from "./discover.js";
@@ -125,17 +124,11 @@ export async function diagnose(
   }
 
   // 3. Install directories must exist or be creatable, and hold correct links.
+  // A directory that overlaps the source cache is refused earlier, by
+  // `installDirsFor`, because no command can operate on it.
   const installDirs = installDirsFor(manifest, scope);
 
   for (const dir of installDirs) {
-    if (isInside(sourcesDir(), dir)) {
-      issues.push({
-        level: "error",
-        kind: "install_dir_inside_sources",
-        message: `install directory ${dir} sits inside the source cache`,
-      });
-      continue;
-    }
     if (isDirectory(dir) && !isWritable(dir)) {
       issues.push({
         level: "error",
