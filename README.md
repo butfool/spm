@@ -29,10 +29,18 @@ $ spm install
 
 ## Installation
 
-From a repository checkout:
+Once the package is published:
 
 ```bash
-npm install
+npm install -g @butcool/spm
+```
+
+From a checkout:
+
+```bash
+git clone https://github.com/butfool/spm.git
+cd spm
+npm ci
 npm run build
 npm link
 ```
@@ -282,6 +290,16 @@ discovery inside that repository.
 Install directories are confined to the manifest's own tree, and `--force`
 never lifts that confinement: it decides whether a blocking entry may be
 replaced, not where the install may write.
+
+Commands that write take a machine-level lock at `<SPM_HOME>/.lock` for the
+duration of the run, so two spm processes cannot reconcile the same manifests
+and cache at once. A lock left behind by a process that has exited is taken
+over automatically. Manifests are replaced through a temporary file, so a
+reader never sees a half-written file.
+
+`spm doctor` exits non-zero when it reports an error, which is what makes it
+usable as a continuous-integration gate. Warnings alone leave the run
+successful.
 
 Sources are cached below `~/.config/spm/sources/`. Local source entries are
 symlinks to your working directories, so edits become available immediately.
