@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { SpmError } from "./errors.js";
 
@@ -85,17 +85,6 @@ export function readSettings(): Settings {
     );
   }
   return result.data;
-}
-
-export function writeSettings(settings: Settings): void {
-  ensureHomeDirs();
-  fs.writeFileSync(settingsPath(), stringifyYaml(settings, { lineWidth: 0 }), "utf8");
-}
-
-/** Creates SPM_HOME and the sources directory if they don't exist yet. */
-export function ensureHomeDirs(): void {
-  fs.mkdirSync(spmHome(), { recursive: true });
-  fs.mkdirSync(sourcesDir(), { recursive: true });
 }
 
 /**

@@ -133,11 +133,6 @@ export function declarationConflict(
   return { local, global };
 }
 
-/** Every repository name the two layers declare. */
-export function declaredNames(layers: RepositoryLayers): Set<string> {
-  return new Set([...layers.global.keys(), ...layers.local.keys()]);
-}
-
 /**
  * Registers a local repository in the machine-level registry, which is the
  * global manifest. Creates the file when it doesn't exist yet.

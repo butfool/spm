@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { SpmError } from "../errors.js";
 
@@ -59,14 +59,4 @@ export function readRepoManifest(root: string): RepoManifest {
 /** Reads just the declared repository name, or null when absent. */
 export function readRepoName(root: string): string | null {
   return readRepoManifest(root).name ?? null;
-}
-
-export function writeRepoManifest(root: string, manifest: RepoManifest): void {
-  const file = path.join(root, REPO_MANIFEST_FILENAME);
-  const out: Record<string, unknown> = {};
-  if (manifest.name) out["name"] = manifest.name;
-  if (manifest.exclude.length > 0) out["exclude"] = manifest.exclude;
-  if (manifest.maxDepth > 0) out["maxDepth"] = manifest.maxDepth;
-
-  fs.writeFileSync(file, stringifyYaml(out, { lineWidth: 0 }), "utf8");
 }

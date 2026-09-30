@@ -31,10 +31,6 @@ async function git(args: string[], cwd?: string): Promise<string> {
   }
 }
 
-export function isGitAvailable(): boolean {
-  return true; // Resolved lazily; a missing git surfaces as SpmError from git().
-}
-
 /**
  * Shallow-clones `owner/name` into `dest`, following the remote's default
  * branch. No ref is pinned: a SKILL.md repository has nothing to resolve, and
@@ -54,15 +50,6 @@ export async function pull(dir: string): Promise<void> {
 export async function currentCommit(dir: string): Promise<string | null> {
   try {
     return await git(["rev-parse", "--short", "HEAD"], dir);
-  } catch {
-    return null;
-  }
-}
-
-/** The `origin` remote URL of the checkout in `dir`, or null. */
-export async function remoteUrl(dir: string): Promise<string | null> {
-  try {
-    return await git(["remote", "get-url", "origin"], dir);
   } catch {
     return null;
   }
