@@ -1,5 +1,5 @@
 {
-  "name": "spm",
+  "name": "@butcool/spm",
   "version": "0.1.0",
   "description": "Declarative SKILL.md dependency manager for AI coding agents",
   "type": "module",
