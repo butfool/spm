@@ -240,6 +240,11 @@ Useful options:
 
 Run `spm <command> --help` for the complete options of a command.
 
+`spm update` refreshes every GitHub repository the manifest uses one at a
+time. A repository whose remote has been deleted or made private is reported
+and skipped, the remaining repositories still refresh, and the relink step
+still runs; the command exits non-zero and names the repositories that failed.
+
 ## Global skills and aliases
 
 Install a skill for your user account with the global scope:

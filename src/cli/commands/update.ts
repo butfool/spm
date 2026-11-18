@@ -5,6 +5,7 @@ import { readRepoManifest } from "../../core/repo-manifest.js";
 import { repositoryLayers } from "../../core/registry.js";
 import { expandAlias, isKnownLocal, parseSpecTarget, unknownAliasError } from "../../core/resolve.js";
 import { listSources, refreshGithub } from "../../core/source.js";
+import { SpmError } from "../../errors.js";
 import { dim, info, success, warn } from "../../log.js";
 import { loadManifest, scopeFrom, type GlobalOptions } from "../context.js";
 import { runAdd } from "./add.js";
@@ -20,12 +21,22 @@ export function registerUpdateCommand(program: Command): void {
       const scope = scopeFrom(merged);
       const { manifest } = loadManifest(scope, true);
 
+      const failed: string[] = [];
+
       for (const repo of await selectGithubRepositories(specs, manifest, scope)) {
-        const result = await refreshGithub(repo);
-        if (result === "updated") {
-          success(`${repo}: fetched`);
-        } else {
-          warn(`${repo}: not cloned on this machine`);
+        try {
+          const result = await refreshGithub(repo);
+          if (result === "updated") {
+            success(`${repo}: fetched`);
+          } else {
+            warn(`${repo}: not cloned on this machine`);
+          }
+        } catch (err) {
+          // One unusable remote must not stop the others: each repository is
+          // an independent result, and the command reports the failures at the
+          // end instead of dying on the first one.
+          failed.push(repo);
+          warn(`${repo}: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
 
@@ -33,6 +44,13 @@ export function registerUpdateCommand(program: Command): void {
       // new specifiers — the manifest is already the source of truth.
       info("");
       await runAdd([], scope, manifest, merged);
+
+      if (failed.length > 0) {
+        throw new SpmError(
+          `${failed.length === 1 ? "repository" : "repositories"} failed to fetch: ${failed.join(", ")}`,
+          "Everything else refreshed and relinked. Check that the remote still exists, or drop the declaration.",
+        );
+      }
     });
 }
 
