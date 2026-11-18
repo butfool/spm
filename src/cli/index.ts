@@ -16,6 +16,7 @@ import { registerListCommand } from "./commands/list.js";
 import { registerRemoveCommand } from "./commands/remove.js";
 import { registerRepositoryCommand } from "./commands/repository.js";
 import { registerUpdateCommand } from "./commands/update.js";
+import { registerValidateCommand } from "./commands/validate.js";
 
 /** The published version, so `spm --version` cannot drift from package.json. */
 const packageJson = createRequire(import.meta.url)("../../package.json") as {
@@ -91,6 +92,7 @@ export function buildProgram(): Command {
   registerAliasCommand(program);
   registerDoctorCommand(program);
   registerUpdateCommand(program);
+  registerValidateCommand(program);
   registerCleanCommand(program);
   registerConfigCommand(program);
 

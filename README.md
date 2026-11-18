@@ -222,6 +222,7 @@ manifest explicit and predictable.
 | `spm find [query]` | Search registered repositories |
 | `spm info <spec>` | Show details for one skill |
 | `spm doctor [--fix]` | Diagnose and repair manifest/link problems |
+| `spm validate <path...>` | Lint SKILL.md files against the agentskills.io rules |
 | `spm update [spec...]` | Refresh GitHub repositories and relink skills |
 | `spm clean [--dry-run]` | Remove unreferenced source-cache entries |
 | `spm repository add\|remove\|list` | Manage local repositories |
@@ -369,6 +370,42 @@ of that skill.
 Invalid `SKILL.md` files are reported with their paths and reasons. Commands
 return a non-zero status so skipped skills remain visible in scripts and
 continuous integration.
+
+## Linting a SKILL.md
+
+Discovery accepts a skill as soon as its frontmatter has a usable `name`. When
+the file should also survive other clients and the agentskills.io rules, lint it
+explicitly:
+
+```console
+$ spm validate .agents/skills/pdf-fill
+
+~/project/.agents/skills/pdf-fill/SKILL.md
+! Skill name "pdf_fill" uses '.' or '_' — portable agentskills.io names allow only lowercase letters, digits and hyphens [name]
+  fix: Rename using hyphens only, e.g. my-skill
+
+Summary: 0 errors, 1 warning across 1 file
+```
+
+`spm validate` accepts files or directories (walked recursively, skipping
+`node_modules`, `dist`, and other vendored trees) and reports:
+
+- **Frontmatter shape** — a missing block, broken YAML, or an unquoted colon in
+  `description`.
+- **Required fields** — `name` and `description`.
+- **Name rules** — at most 64 characters, no leading/trailing or consecutive
+  hyphens, no reserved `anthropic`/`claude` words, and a warning when the name
+  uses `.` or `_` or differs from its directory.
+- **Description rules** — at most 1024 characters, no XML/HTML tags.
+- **Field restrictions** — `effort` and `shell` enums, `compatibility` at most
+  500 characters, and a warning for unrecognised top-level fields.
+- **Body rules** — non-empty, at most 500 lines, and every relative link in the
+  body resolves to a real file. Warnings cover recommendations; `when_to_use`
+  missing is one of them.
+
+Any error exits with status 1, so it gates a commit or CI job. `--json` returns
+the same findings as structured data. Linting never writes: it reads files, does
+not touch the manifest, and takes no lock.
 
 ## Development
 

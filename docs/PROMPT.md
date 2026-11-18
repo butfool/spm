@@ -205,6 +205,7 @@ YAML frontmatter（`---` 分隔，容忍 CRLF 和开头空行）：
 | `spm find [query]` | | 跨所有已注册仓库搜索 |
 | `spm info <spec>` | | 单个 skill 详情 |
 | `spm doctor [--fix]` | | 清单 vs 磁盘一致性检查 |
+| `spm validate <path...>` | | 按 agentskills.io 规则 lint SKILL.md，只读 |
 | `spm update [spec...]` | `up` | github 仓库重新拉取，然后重新链接 |
 | `spm clean [--dry-run]` | | 按全局与项目清单根清理无人引用的 source 缓存 |
 | `spm repository add <path> [--name]` | | 把本地目录登记进全局清单，名字默认取目录名并可修改 |
