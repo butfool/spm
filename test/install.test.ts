@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { sourcesDir, spmHome } from "../src/config.js";
 import {
   assertSaneInstallDirs,
+  externalLinks,
   installDirsFor,
   installSkills,
   inspectTargets,
@@ -775,30 +776,28 @@ describe("external skills", () => {
     expect(fs.readlinkSync(path.join(dir, "alpha"))).toBe(elsewhere);
   });
 
-  it("preserves a link spm created before the name became external", async () => {
+  it("removes a link spm created before the name became external", async () => {
     const before = setup([".agents/skills"], ["local:fixture:*"]);
     await link(before);
-    const linkPath = path.join(project, ".agents/skills", "alpha");
-    const target = fs.readlinkSync(linkPath);
 
     const result = await link({ ...before, external: ["alpha"] });
 
-    expect(result.removed).toEqual([]);
-    expect(entries(path.join(project, ".agents/skills"))).toEqual(["alpha", "beta"]);
-    expect(fs.readlinkSync(linkPath)).toBe(target);
+    expect(result.removed.map((r) => r.skillName)).toEqual(["alpha"]);
+    expect(entries(path.join(project, ".agents/skills"))).toEqual(["beta"]);
   });
 
-  it("preserves external names when uninstalling links directly", async () => {
+  it("reports only the links spm created on external names", async () => {
     const before = setup([".agents/skills"], ["local:fixture:*"]);
     await link(before);
     const manifest = { ...before, external: ["alpha"] };
-    const linkPath = path.join(project, ".agents/skills", "alpha");
-    const target = fs.readlinkSync(linkPath);
 
-    const removed = uninstallSkills(["alpha", "beta"], manifest, scope);
+    const stranded = externalLinks(manifest, installDirsFor(manifest, scope));
 
-    expect(removed.map((item) => item.skillName)).toEqual(["beta"]);
-    expect(fs.readlinkSync(linkPath)).toBe(target);
+    expect(stranded.map((l) => l.skillName)).toEqual(["alpha"]);
+    expect(stranded[0]!.linkPath).toBe(path.join(project, ".agents/skills", "alpha"));
+
+    await link(manifest);
+    expect(externalLinks(manifest, installDirsFor(manifest, scope))).toEqual([]);
   });
 });
 

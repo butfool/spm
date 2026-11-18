@@ -152,12 +152,12 @@ Every declared skill is linked into every `installDirs` entry. Relative paths
 resolve from the directory containing `skills.yaml`.
 
 `external:` hands names to the other tools that share the install directories.
-spm preserves every existing directory, file, and symlink on these names,
-including links into its source cache. Installation, pruning, frozen checks,
-and doctor repairs leave these entries alone. A whole-repository declaration
-installs every member except the external ones. Declaring the same name in
-`skills:` as well is refused, because the manifest would be saying two
-opposite things at once.
+spm never creates or repoints these names, and every entry another tool put
+there is left alone. Ownership decides the rest: a link spm itself created on
+such a name is removed by an install, because the manifest says the name is no
+longer spm's. A whole-repository declaration installs every member except the
+external ones. Declaring the same name in `skills:` as well is refused,
+because the manifest would be saying two opposite things at once.
 
 The list is per manifest: a project's `external:` covers that project's install
 directories, and the global manifest's covers the global install. It is written

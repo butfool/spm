@@ -3,7 +3,7 @@ import path from "node:path";
 import { exists, isDirectory, isSymlink, linkPointsTo, readLink } from "../fsutil.js";
 import { SpmError } from "../errors.js";
 import { skippedLine, type SkippedSkill } from "./discover.js";
-import { installDirsFor, ownedLinkTarget } from "./install.js";
+import { externalLinks, installDirsFor, ownedLinkTarget } from "./install.js";
 import { externalSkills, type Manifest } from "./manifest.js";
 import { declarationConflict, repositoryLayers } from "./registry.js";
 import { describeLocal } from "./source.js";
@@ -201,7 +201,8 @@ export async function diagnose(
     for (const name of fs.readdirSync(dir)) {
       if (name.startsWith(".")) continue;
       if (desired.has(name)) continue;
-      // External names are outside spm's ownership, including cache links.
+      // A name handed to another tool is answered for below, where ownership
+      // can be decided by the link target instead of by the name alone.
       if (external.names.has(name)) continue;
 
       const entryPath = path.join(dir, name);
@@ -216,7 +217,19 @@ export async function diagnose(
     }
   }
 
-  // 4. An exclusion whose skill has gone from every install directory is a
+  // 4. A name the manifest declares external must not carry a link spm made.
+  // The manifest says another tool owns the name, so spm's own link there is a
+  // contradiction, and the next install pass deletes it.
+  for (const link of externalLinks(manifest, installDirs)) {
+    issues.push({
+      level: "error",
+      kind: "external_link_present",
+      message: `${link.linkPath} is a link spm created on an external skill name`,
+      fix: "spm i will remove it",
+    });
+  }
+
+  // 5. An exclusion whose skill has gone from every install directory is a
   // leftover from an uninstall. Only checked once some directory exists: with
   // no install directory at all there is nothing to have disappeared from.
   const present = installDirs.filter(isDirectory);

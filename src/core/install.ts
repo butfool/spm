@@ -81,7 +81,7 @@ export function installSkills(
 
   const removed = opts.prune === false
     ? []
-    : pruneOrphans(installDirs, targets, new Set(manifest.external));
+    : pruneOrphans(installDirs, targets);
 
   if (scope.kind === "project") registerProjectManifest(scope.manifestDir);
 
@@ -155,7 +155,7 @@ export function ownedLinkTarget(linkPath: string): string | null {
 
 /**
  * Removes links in each install directory that spm made but this manifest no
- * longer declares, preserving every name the manifest hands to another tool.
+ * longer declares.
  *
  * What counts as one of spm's links is `ownedLinkTarget`'s question, and the
  * answer is "its target lives in the source cache". A link the user made by
@@ -165,7 +165,6 @@ export function ownedLinkTarget(linkPath: string): string | null {
 export function pruneOrphans(
   installDirs: string[],
   targets: SkillTarget[],
-  external: ReadonlySet<string>,
 ): { skillName: string; linkPath: string }[] {
   const desired = new Set(targets.map((t) => t.name));
   const removed: { skillName: string; linkPath: string }[] = [];
@@ -175,7 +174,7 @@ export function pruneOrphans(
 
     for (const name of fs.readdirSync(dir)) {
       if (name.startsWith(".")) continue;
-      if (desired.has(name) || external.has(name)) continue;
+      if (desired.has(name)) continue;
 
       const linkPath = path.join(dir, name);
       if (ownedLinkTarget(linkPath) === null) continue;
@@ -186,6 +185,39 @@ export function pruneOrphans(
   }
 
   return removed;
+}
+
+/** A link spm made on a name the manifest declares as another tool's. */
+export interface ExternalLink {
+  skillName: string;
+  installDir: string;
+  linkPath: string;
+}
+
+/**
+ * Links spm created on names the manifest hands to another tool.
+ *
+ * Ownership follows `ownedLinkTarget` and nothing else: an entry another tool
+ * put there points somewhere outside the source cache and is none of spm's
+ * business, while one of spm's own links contradicts the manifest. Install
+ * removes them through `pruneOrphans`, because the expanded targets never
+ * contain an external name; the reading commands report them through this
+ * function.
+ */
+export function externalLinks(manifest: Manifest, installDirs: string[]): ExternalLink[] {
+  const names = [...new Set(manifest.external)].sort((a, b) => a.localeCompare(b));
+  const found: ExternalLink[] = [];
+
+  for (const dir of installDirs) {
+    if (!isDirectory(dir)) continue;
+    for (const name of names) {
+      const linkPath = path.join(dir, name);
+      if (ownedLinkTarget(linkPath) === null) continue;
+      found.push({ skillName: name, installDir: dir, linkPath });
+    }
+  }
+
+  return found;
 }
 
 /** Uninstalls specific skill names from every install directory of a scope. */
@@ -200,7 +232,6 @@ export function uninstallSkills(
   for (const dir of installDirs) {
     if (!isDirectory(dir)) continue;
     for (const name of skillNames) {
-      if (manifest.external.includes(name)) continue;
       const linkPath = path.join(dir, name);
       if (ownedLinkTarget(linkPath) === null) continue;
       fs.unlinkSync(linkPath);

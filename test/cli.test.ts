@@ -887,35 +887,38 @@ describe("external skills", () => {
     expect(healthy.stdout).toContain("1 external");
   });
 
-  it("preserves an existing cache link after its name becomes external across install and checks", async () => {
+  it("doctor: a link spm left on an external name is an error that --fix removes", async () => {
     const repo = setupExternal();
     writeManifest(
       project,
       `installDirs:\n  - .agents/skills\nrepositories:\n  fixture:\n    type: local\n    path: "${repo}"\nskills:\n  - local:fixture:*\n`,
     );
     expect((await spm("i")).code).toBe(0);
-    const linkPath = path.join(installDir(), "auto-skill");
-    const target = fs.readlinkSync(linkPath);
+    // The name changes owner while spm's link is still on disk.
     writeExternalManifest(repo, "  - auto-skill\n", "  - local:fixture:*\n");
 
     const doctor = await spm("doctor");
-    expect(doctor.code).toBe(0);
-    expect(doctor.stdout).toContain("healthy");
+    expect(doctor.code).toBe(1);
+    expect(doctor.stderr).toContain("is a link spm created on an external skill name");
 
     const frozen = await spm("i", "--frozen");
-    expect(frozen.code).toBe(0);
-    expect(frozen.stdout).toContain("everything is in sync");
+    expect(frozen.code).toBe(1);
+    expect(frozen.stderr).toContain("sits on an external skill name");
 
     const listed = await spm("list");
-    expect(listed.code).toBe(0);
-    expect(listed.stderr).toBe("");
-    expect(listed.stdout).toMatch(/auto-skill\s+external\s+not managed by spm/);
+    expect(listed.stderr).toContain("link(s) spm created sit on external skill names");
 
-    for (const args of [["doctor", "--fix"], ["i"], ["i", "--force"]]) {
-      expect((await spm(...args)).code).toBe(0);
-      expect(fs.readlinkSync(linkPath)).toBe(target);
-      expect(entries(installDir())).toEqual(["auto-skill", "own-skill"]);
-    }
+    const json = JSON.parse((await spm("list", "--json")).stdout) as {
+      externalLinks: { name: string; path: string }[];
+    };
+    expect(json.externalLinks.map((link) => link.name)).toEqual(["auto-skill"]);
+    expect(json.externalLinks[0]!.path).toBe(
+      path.join(fs.realpathSync(installDir()), "auto-skill"),
+    );
+
+    const fixed = await spm("doctor", "--fix");
+    expect(fixed.code).toBe(0);
+    expect(entries(installDir())).toEqual(["own-skill"]);
   });
 
   it("doctor and install: a name declared twice is an error", async () => {

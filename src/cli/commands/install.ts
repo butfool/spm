@@ -1,6 +1,6 @@
 import type { Command } from "commander";
 import { SpmError } from "../../errors.js";
-import { installDirsFor, installSkills } from "../../core/install.js";
+import { externalLinks, installDirsFor, installSkills } from "../../core/install.js";
 import { dim, heading, info, skip, success, warn } from "../../log.js";
 import { displayPath, loadManifest, reconcile, scopeFrom, type GlobalOptions } from "../context.js";
 import { failOnSkippedSkills, report } from "../report.js";
@@ -103,6 +103,17 @@ async function reportFrozen(
     for (const entry of bad) {
       warn(`${state.name}: ${describeState(entry.state)} at ${displayPath(entry.linkPath)}`);
     }
+  }
+
+  // A link on a name the manifest declares external is as out of date as a
+  // missing one: `spm i` deletes it, so a frozen run must not call it synced.
+  for (const link of externalLinks(manifest, installDirsFor(manifest, scope))) {
+    problems += 1;
+    warn(
+      `${link.skillName}: a link spm created sits on an external skill name at ${displayPath(
+        link.linkPath,
+      )}`,
+    );
   }
 
   if (problems > 0) {

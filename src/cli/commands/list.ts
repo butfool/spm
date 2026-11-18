@@ -1,5 +1,5 @@
 import type { Command } from "commander";
-import { installDirsFor, inspectTargets } from "../../core/install.js";
+import { externalLinks, installDirsFor, inspectTargets } from "../../core/install.js";
 import { externalSkills, manifestPath } from "../../core/manifest.js";
 import { dim, heading, info, warn, write } from "../../log.js";
 import { displayPath, loadManifest, scopeFrom, type GlobalOptions } from "../context.js";
@@ -37,14 +37,21 @@ export function registerListCommand(program: Command): void {
         externalSkills(manifest, scope.manifestDir),
       );
       const states = inspectTargets(targets, manifest, scope);
+      const installDirs = installDirsFor(manifest, scope);
+      const stranded = externalLinks(manifest, installDirs);
 
       if (opts.json) {
         process.stdout.write(
           `${JSON.stringify(
             {
               manifest: manifestPath(scope.manifestDir),
-              installDirs: installDirsFor(manifest, scope),
+              installDirs,
               external,
+              externalLinks: stranded.map((link) => ({
+                name: link.skillName,
+                dir: link.installDir,
+                path: link.linkPath,
+              })),
               skills: states.map((s) => ({
                 name: s.name,
                 source: s.source,
@@ -59,7 +66,6 @@ export function registerListCommand(program: Command): void {
         return;
       }
 
-      const installDirs = installDirsFor(manifest, scope);
       heading(
         `${states.length} skill${states.length === 1 ? "" : "s"} → ${installDirs
           .map(displayPath)
@@ -94,6 +100,13 @@ export function registerListCommand(program: Command): void {
       if (broken.length > 0) {
         info("");
         warn(`${broken.length} skill(s) are not linked correctly — run \`spm doctor\``);
+      }
+
+      if (stranded.length > 0) {
+        info("");
+        warn(
+          `${stranded.length} link(s) spm created sit on external skill names — run \`spm doctor\``,
+        );
       }
 
       failOnSkippedSkills(skipped);
