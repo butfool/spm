@@ -60,7 +60,7 @@ async function installCommand(specs: string[], opts: InstallOptions): Promise<vo
   const installDirs = installDirsFor(manifest, scope);
 
   if (opts.frozen) {
-    reportFrozen(targets, manifest, scope);
+    await reportFrozen(targets, manifest, scope);
     failOnSkippedSkills(skipped);
     return;
   }
