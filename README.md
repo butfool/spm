@@ -29,7 +29,7 @@ $ spm install
 
 ## Installation
 
-Once the package is published:
+Install the command globally with npm:
 
 ```bash
 npm install -g @butcool/spm
