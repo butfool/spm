@@ -103,6 +103,10 @@ aliases:                # 机器级名字，只指一个 skill；本身不安装
   md-lint: path:~/Code/ButCool/md-lint/skills/md-lint
   notion-api: github:intellectronica/agent-skills:notion-api
 
+external:               # 外部工具装进安装目录的名字；spm 不管它们
+  - codex-reviewer
+  - claude-tasks
+
 skills:                 # 依赖，写成带类型的坐标
   - local:mine:*
   - github:anthropics/skills:pdf-fill
@@ -127,6 +131,12 @@ skills:                 # 依赖，写成带类型的坐标
 - 仓库名与 skill 名会成为路径段，**必须在读取清单时就校验**（见 §5.2）。名字里带 `/`
   或 `..` 能让清单把软链接写到缓存目录之外，这是实打实的安全问题。
 - `skills:` 每一项**必须**是合法坐标，读取清单时就校验，报错要说清错在第几段。
+- `external:` 每一行是一个 skill 名，按 skill 名同一套字符集校验。spm 保留这些名字下
+  已有的目录、文件和符号链接，包括指向来源缓存的链接；安装、孤儿链接清理、冻结检查和
+  doctor 修复均忽略这些条目。声明整个仓库时，列表里的名字从成员里剔除；
+  同一个名字既由 `skills:` 声明、又出现在 `external:` 里，是清单自相矛盾，报错。这个
+  段落可以写在项目清单和全局清单里，各自只作用于自己那份清单的安装目录。只允许手写，
+  不提供命令。
 - **不含任何版本字段。** 不要设计 version / range / semver / ref。
 - 项目清单只写自己需要的仓库。全局清单里已经登记的要复用它，不要重复写一遍路径。
 
@@ -657,6 +667,8 @@ spm doctor                                # → healthy，退出码 0
 | **链接缺失** | warning |
 | 指向缓存目录但未声明的孤儿链接 | warning |
 | 安装目录尚不存在 | warning |
+| 外部技能在全部安装目录里都不存在（排除可能已过时） | warning |
+| 同一个名字既由 `skills:` 声明、又列在 `external:` 里 | error |
 | 登记指向了一个 skill 目录（旧配置，应用 `path:` 坐标取代） | error |
 
 **一个根因只产生一条诊断**。同一件事不要被两条检查路径各报一次，否则汇总计数失真，
@@ -691,6 +703,10 @@ spm doctor                                # → healthy，退出码 0
     无人引用缓存均清理；local/path 目标目录保持原样；全局 repository/alias 只报告；
     broken 与 foreign 条目保持原样；无效根导致零删除；dry-run、JSON、dry-run-code 与二次
     clean 的结果符合 §7.6
+17. **外部技能**：清单读写往返与排序；整仓库声明剔除外部分成员、全部被排除时报错；
+    显式声明与外部名字冲突时报错且不写清单；外部名字上的真实目录与所有符号链接保持原样；
+    `spm i`、`spm i --force` 与 `doctor --fix` 保留外部名字上的缓存链接；`doctor` 的过时排除
+    warning；`list` 的 external 标记与 JSON 字段；`i --frozen` 忽略外部名字上的缓存链接
 
 ---
 

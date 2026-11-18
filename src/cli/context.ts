@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { SkippedSkill } from "../core/discover.js";
-import { manifestExists, readManifest, type Manifest } from "../core/manifest.js";
+import { manifestExists, externalSkills, readManifest, type Manifest } from "../core/manifest.js";
 import { assertNoProjectAliases, emptyManifest } from "../core/registry.js";
 import {
   expandSelections,
@@ -99,7 +99,10 @@ export async function reconcile(
     register: opts.register,
     force: opts.force,
   });
-  const { targets, skipped } = expandSelections(selections);
+  const { targets, skipped } = expandSelections(
+    selections,
+    externalSkills(manifest, scope.manifestDir),
+  );
   return { targets, selections, skipped };
 }
 

@@ -10,7 +10,7 @@ import {
   inspectTargets,
   uninstallSkills,
 } from "../src/core/install.js";
-import { readManifest, writeManifest, type Manifest } from "../src/core/manifest.js";
+import { externalSkills, readManifest, writeManifest, type ExternalSkills, type Manifest } from "../src/core/manifest.js";
 import {
   expandSelections,
   projectScope,
@@ -52,8 +52,14 @@ function setup(installDirs = [".agents/skills"], skills = ["local:fixture:*"]): 
     installDirs,
     repositories: { fixture: { type: "local", path: repo } },
     aliases: {},
+    external: [],
     skills,
   };
+}
+
+/** The exclusion set of a manifest, as every resolution path receives it. */
+function externalOf(manifest: Manifest): ExternalSkills {
+  return externalSkills(manifest, project);
 }
 
 /**
@@ -65,6 +71,7 @@ function writeAliasTable(aliases: Record<string, string>): void {
     installDirs: [],
     repositories: {},
     aliases,
+    external: [],
     skills: [],
   });
 }
@@ -76,6 +83,7 @@ async function link(manifest: Manifest): Promise<ReturnType<typeof installSkills
       global: false,
       register: true,
     }),
+    externalOf(manifest),
   );
   return installSkills(targets, manifest, scope, { prune: true });
 }
@@ -178,6 +186,7 @@ describe("install", () => {
       installDirs: [".agents/skills"],
       repositories: {},
       aliases: {},
+      external: [],
       skills: [`path:${lone}`],
     };
     await link(manifest);
@@ -211,6 +220,7 @@ describe("install", () => {
         global: false,
         register: true,
       }),
+      externalOf(manifest),
     );
     const result = installSkills(targets, manifest, scope, { force: true, prune: true });
 
@@ -239,6 +249,7 @@ describe("install", () => {
       installDirs: [".agents/skills"],
       repositories: { fixture: { type: "local", path: repo } },
       aliases: {},
+      external: [],
       skills: ["local:fixture:*"],
     };
     expect(describeLocal("fixture")).toBeNull();
@@ -254,6 +265,7 @@ describe("install", () => {
       installDirs: [],
       repositories: { fixture: { type: "local", path: repo } },
       aliases: {},
+      external: [],
       skills: ["local:fixture:*"],
     };
 
@@ -282,6 +294,7 @@ describe("inspectTargets", () => {
         global: false,
         register: true,
       }),
+      externalOf(manifest),
     );
 
     await link(manifest);
@@ -473,6 +486,7 @@ describe("resolveSpec", () => {
       installDirs: [],
       repositories: { mine: { type: "local", path: elsewhere } },
       aliases: {},
+      external: [],
       skills: [],
     };
 
@@ -494,7 +508,7 @@ describe("resolveSpec", () => {
     const run = resolveManifestEntries(
       { ...manifest, skills: ["local:fixture:ghost"] },
       { manifestDir: project, global: false, register: true },
-    ).then(expandSelections);
+    ).then((selections) => expandSelections(selections, externalOf(manifest)));
 
     await expect(run).rejects.toThrow(/skill "ghost" not found in local:fixture:ghost/);
     // The list of alternatives is a hint, so it survives `--quiet`.
@@ -527,6 +541,7 @@ describe("alias coordinates", () => {
       installDirs: [".agents/skills"],
       repositories: {},
       aliases: {},
+      external: [],
       skills: ["alias:mine"],
     };
 
@@ -601,6 +616,7 @@ describe("expandSelections", () => {
         two: { type: "local", path: twin },
       },
       aliases: {},
+      external: [],
       skills: ["local:one:*", "local:two:*"],
     };
 
@@ -609,7 +625,7 @@ describe("expandSelections", () => {
         manifestDir: project,
         global: false,
         register: true,
-      }).then(expandSelections),
+      }).then((selections) => expandSelections(selections, externalOf(manifest))),
     ).rejects.toThrow(/provided by two repositories/);
   });
 
@@ -619,6 +635,7 @@ describe("expandSelections", () => {
       installDirs: [],
       repositories: { fixture: { type: "local", path: repo } },
       aliases: {},
+      external: [],
       // The same directory, named once through the repository and once
       // directly. "Pick a repository" would be the wrong advice here.
       skills: ["local:fixture:alpha", `path:${path.join(repo, "alpha")}`],
@@ -629,7 +646,7 @@ describe("expandSelections", () => {
         manifestDir: project,
         global: false,
         register: true,
-      }).then(expandSelections),
+      }).then((selections) => expandSelections(selections, externalOf(manifest))),
     ).rejects.toThrow(/declared twice for the same directory/);
   });
 
@@ -640,6 +657,7 @@ describe("expandSelections", () => {
       installDirs: [],
       repositories: { fixture: { type: "local", path: repo } },
       aliases: {},
+      external: [],
       skills: ["local:fixture:alpha", `path:${twin}`],
     };
 
@@ -648,7 +666,7 @@ describe("expandSelections", () => {
         manifestDir: project,
         global: false,
         register: true,
-      }).then(expandSelections),
+      }).then((selections) => expandSelections(selections, externalOf(manifest))),
     ).rejects.toThrow(/provided by two repositories/);
   });
 
@@ -662,6 +680,7 @@ describe("expandSelections", () => {
         global: false,
         register: true,
       }),
+      externalOf(manifest),
     );
 
     expect(targets.map((t) => t.name)).toEqual(["alpha", "beta"]);
@@ -680,6 +699,7 @@ describe("expandSelections", () => {
       installDirs: [],
       repositories: { "broken-source": { type: "local", path: onlyInvalid } },
       aliases: {},
+      external: [],
       skills: ["local:broken-source:*"],
     };
 
@@ -687,7 +707,7 @@ describe("expandSelections", () => {
       manifestDir: project,
       global: false,
       register: true,
-    }).then(expandSelections);
+    }).then((selections) => expandSelections(selections, externalOf(manifest)));
 
     await expect(run).rejects.toThrow(/local:broken-source:\* contains no usable skills/);
     await run.catch((err: SkillResolutionError) => {
@@ -695,6 +715,90 @@ describe("expandSelections", () => {
       expect(err.skipped.map((s) => s.relativePath)).toEqual(["broken/SKILL.md"]);
       expect(err.hint).toMatch(/broken\/SKILL\.md/);
     });
+  });
+});
+
+describe("external skills", () => {
+  /** A manifest of the fixture repository that hands `names` to another tool. */
+  function owned(names: string[], skills = ["local:fixture:*"]): Manifest {
+    return { ...setup([".agents/skills"], skills), external: names };
+  }
+
+  it("drops the members another tool owns from a whole-repository declaration", async () => {
+    const manifest = owned(["alpha"]);
+
+    const result = await link(manifest);
+
+    expect(result.links.map((l) => l.skillName)).toEqual(["beta"]);
+    expect(entries(path.join(project, ".agents/skills"))).toEqual(["beta"]);
+  });
+
+  it("refuses a declaration that names an external skill outright", async () => {
+    const manifest = owned(["alpha"], ["local:fixture:alpha"]);
+
+    await expect(link(manifest)).rejects.toThrow(
+      /skill "alpha" is declared external, so local:fixture:alpha cannot install it/,
+    );
+  });
+
+  it("refuses a repository whose every member is external", async () => {
+    const manifest = owned(["alpha", "beta"]);
+
+    await expect(link(manifest)).rejects.toThrow(
+      /local:fixture:\* only provides external skills: alpha, beta/,
+    );
+  });
+
+  it("leaves a real directory another tool installed alone", async () => {
+    const manifest = owned(["alpha"]);
+    const dir = path.join(project, ".agents/skills");
+    await link(manifest);
+    fs.mkdirSync(path.join(dir, "alpha"));
+    fs.writeFileSync(path.join(dir, "alpha", "SKILL.md"), "x", "utf8");
+
+    const again = await link(manifest);
+
+    expect(again.removed).toEqual([]);
+    expect(entries(dir)).toEqual(["alpha", "beta"]);
+  });
+
+  it("leaves a link another tool created alone", async () => {
+    const elsewhere = writeSkill(tmpdir("spm-ext-elsewhere"), "", "alpha");
+    const manifest = owned(["alpha"]);
+    const dir = path.join(project, ".agents/skills");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.symlinkSync(elsewhere, path.join(dir, "alpha"));
+
+    const result = await link(manifest);
+
+    expect(result.removed).toEqual([]);
+    expect(fs.readlinkSync(path.join(dir, "alpha"))).toBe(elsewhere);
+  });
+
+  it("preserves a link spm created before the name became external", async () => {
+    const before = setup([".agents/skills"], ["local:fixture:*"]);
+    await link(before);
+    const linkPath = path.join(project, ".agents/skills", "alpha");
+    const target = fs.readlinkSync(linkPath);
+
+    const result = await link({ ...before, external: ["alpha"] });
+
+    expect(result.removed).toEqual([]);
+    expect(entries(path.join(project, ".agents/skills"))).toEqual(["alpha", "beta"]);
+    expect(fs.readlinkSync(linkPath)).toBe(target);
+  });
+
+  it("preserves external names when uninstalling links directly", async () => {
+    const before = setup([".agents/skills"], ["local:fixture:*"]);
+    await link(before);
+    const manifest = { ...before, external: ["alpha"] };
+    const linkPath = path.join(project, ".agents/skills", "alpha");
+    const target = fs.readlinkSync(linkPath);
+
+    const removed = uninstallSkills(["alpha", "beta"], manifest, scope);
+
+    expect(removed.map((item) => item.skillName)).toEqual(["beta"]);
+    expect(fs.readlinkSync(linkPath)).toBe(target);
   });
 });
 

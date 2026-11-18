@@ -4,7 +4,7 @@ import { exists, isDirectory, isSymlink, linkPointsTo, readLink } from "../fsuti
 import { SpmError } from "../errors.js";
 import { skippedLine, type SkippedSkill } from "./discover.js";
 import { installDirsFor, ownedLinkTarget } from "./install.js";
-import type { Manifest } from "./manifest.js";
+import { externalSkills, type Manifest } from "./manifest.js";
 import { declarationConflict, repositoryLayers } from "./registry.js";
 import { describeLocal } from "./source.js";
 import {
@@ -31,6 +31,8 @@ export interface DoctorReport {
   issues: Issue[];
   targets: SkillTarget[];
   installDirs: string[];
+  /** The names the manifest declares as another tool's. */
+  external: string[];
 }
 
 /**
@@ -48,6 +50,7 @@ export async function diagnose(
   const issues: Issue[] = [];
   void opts;
 
+  const external = externalSkills(manifest, scope.manifestDir);
   const layers = repositoryLayers(manifest, scope.manifestDir, scope.kind === "global");
 
   // 0. A local repository must be a directory of skills. A directory holding
@@ -96,7 +99,7 @@ export async function diagnose(
       global: scope.kind === "global",
       register: false,
     });
-    const expansion = expandSelections(selections);
+    const expansion = expandSelections(selections, external);
     targets = expansion.targets;
     pushInvalidSkillIssues(issues, expansion.skipped);
   } catch (err) {
@@ -198,6 +201,8 @@ export async function diagnose(
     for (const name of fs.readdirSync(dir)) {
       if (name.startsWith(".")) continue;
       if (desired.has(name)) continue;
+      // External names are outside spm's ownership, including cache links.
+      if (external.names.has(name)) continue;
 
       const entryPath = path.join(dir, name);
       if (ownedLinkTarget(entryPath) === null) continue;
@@ -211,7 +216,23 @@ export async function diagnose(
     }
   }
 
-  return { issues, targets, installDirs };
+  // 4. An exclusion whose skill has gone from every install directory is a
+  // leftover from an uninstall. Only checked once some directory exists: with
+  // no install directory at all there is nothing to have disappeared from.
+  const present = installDirs.filter(isDirectory);
+  if (present.length > 0) {
+    for (const name of [...external.names].sort((a, b) => a.localeCompare(b))) {
+      if (present.some((dir) => exists(path.join(dir, name)))) continue;
+      issues.push({
+        level: "warning",
+        kind: "stale_external",
+        message: `external skill "${name}" is missing from every install directory`,
+        fix: `Remove it from external: in ${external.manifestFile} if nothing installs it any more.`,
+      });
+    }
+  }
+
+  return { issues, targets, installDirs, external: [...external.names].sort() };
 }
 
 /**

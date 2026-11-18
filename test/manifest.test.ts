@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { isRepositoryCoordinate, parseCoordinate } from "../src/core/coordinate.js";
 import {
   addSkillEntry,
+  externalSkills,
   manifestCoordinates,
   manifestPath,
   readManifest,
@@ -21,6 +22,7 @@ const empty = (): Manifest => ({
   installDirs: [],
   repositories: {},
   aliases: {},
+  external: [],
   skills: [],
 });
 
@@ -34,6 +36,7 @@ describe("manifest round-trip", () => {
         other: { type: "local", path: "~/other" },
       },
       aliases: { pdf: "local:mine:pdf", "xmind-file": "path:~/xmind-file" },
+      external: ["codex-reviewer", "claude-tasks"],
       skills: ["local:mine:*", "github:a/b:pdf-fill"],
     });
 
@@ -44,6 +47,7 @@ describe("manifest round-trip", () => {
     expect(back!.repositories["other"]).toEqual({ type: "local", path: "~/other" });
     expect(back!.aliases["pdf"]).toBe("local:mine:pdf");
     expect(back!.aliases["xmind-file"]).toBe("path:~/xmind-file");
+    expect(back!.external).toEqual(["claude-tasks", "codex-reviewer"]);
     expect(back!.skills).toEqual(["github:a/b:pdf-fill", "local:mine:*"]);
   });
 
@@ -53,6 +57,7 @@ describe("manifest round-trip", () => {
       installDirs: [],
       repositories: {},
       aliases: {},
+      external: [],
       skills: ["local:mine:*", "github:a/b:pdf"],
     });
 
@@ -76,6 +81,7 @@ describe("manifest round-trip", () => {
       installDirs: [],
       repositories: { "kimi-cu": { type: "local", path: longPath } },
       aliases: {},
+      external: [],
       skills: [],
     });
 
@@ -91,12 +97,14 @@ describe("manifest round-trip", () => {
       installDirs: [],
       repositories: { zeta: { type: "local", path: "/z" }, alpha: { type: "local", path: "/a" } },
       aliases: { zulu: "path:/z", alpha2: "path:/a" },
+      external: ["zulu-skill", "alpha-skill"],
       skills: ["local:zeta:two", "local:alpha:one"],
     });
     writeManifest(b, {
       installDirs: [],
       repositories: { alpha: { type: "local", path: "/a" }, zeta: { type: "local", path: "/z" } },
       aliases: { alpha2: "path:/a", zulu: "path:/z" },
+      external: ["alpha-skill", "zulu-skill"],
       skills: ["local:alpha:one", "local:zeta:two"],
     });
 
@@ -243,6 +251,7 @@ describe("removeSkillEntry", () => {
       installDirs: [],
       repositories: {},
       aliases: {},
+      external: [],
       skills: ["local:a:x", "local:b:y"],
     };
     expect(removeSkillEntry(m, parseCoordinate("local:a:x"))).toBe(true);
@@ -255,6 +264,7 @@ describe("removeSkillEntry", () => {
       installDirs: [],
       repositories: {},
       aliases: {},
+      external: [],
       skills: ["local:a:x", "local:a:y", "local:b:z"],
     };
     expect(removeSkillEntries(m, (entry) => entry.startsWith("local:a:"))).toBe(2);
@@ -287,6 +297,47 @@ describe("upsertAlias", () => {
     expect(upsertAlias(m, "md-lint", "path:/y/md-lint")).toBe(true);
     expect(m.repositories["md-lint"]).toEqual({ type: "local", path: "/x" });
     expect(m.aliases["md-lint"]).toBe("path:/y/md-lint");
+  });
+});
+
+describe("external skills", () => {
+  it("rejects a name that could not be a path segment", () => {
+    const dir = tmpdir("spm-man");
+    fs.writeFileSync(manifestPath(dir), "external:\n  - ../escape\n", "utf8");
+
+    expect(() => readManifest(dir)).toThrow(/unusable external skill name/);
+  });
+
+  it("writes the names sorted and deduplicated", () => {
+    const dir = tmpdir("spm-man");
+    writeManifest(dir, {
+      installDirs: [],
+      repositories: {},
+      aliases: {},
+      external: ["zeta-skill", "alpha-skill", "zeta-skill"],
+      skills: [],
+    });
+
+    expect(readManifest(dir)!.external).toEqual(["alpha-skill", "zeta-skill"]);
+    expect(fs.readFileSync(manifestPath(dir), "utf8")).toContain(
+      "external:\n  - alpha-skill\n  - zeta-skill\n",
+    );
+  });
+
+  it("answers with the names and the manifest that declares them", () => {
+    const dir = tmpdir("spm-man");
+    writeManifest(dir, {
+      installDirs: [],
+      repositories: {},
+      aliases: {},
+      external: ["codex-reviewer"],
+      skills: [],
+    });
+
+    const declared = externalSkills(readManifest(dir)!, dir);
+
+    expect([...declared.names]).toEqual(["codex-reviewer"]);
+    expect(declared.manifestFile).toBe(manifestPath(dir));
   });
 });
 

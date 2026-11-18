@@ -797,3 +797,147 @@ describe("reporting a skipped SKILL.md", () => {
     expect(result.stderr).toBe("");
   });
 });
+
+describe("external skills", () => {
+  /** A repository of two skills, one of which another tool installs. */
+  function setupExternal(): string {
+    const repo = tmpdir("spm-cli-external");
+    writeSkill(repo, "own-skill", "own-skill");
+    writeSkill(repo, "auto-skill", "auto-skill");
+    registerLocal(repo, "fixture");
+    return repo;
+  }
+
+  function writeExternalManifest(repo: string, external: string, skills: string): void {
+    writeManifest(
+      project,
+      `installDirs:\n  - .agents/skills\nrepositories:\n  fixture:\n    type: local\n    path: "${repo}"\nexternal:\n${external}skills:\n${skills}`,
+    );
+  }
+
+  function installDir(): string {
+    return path.join(project, ".agents/skills");
+  }
+
+  it("list: marks the excluded names as external and keeps them out of the link report", async () => {
+    const repo = setupExternal();
+    writeExternalManifest(repo, "  - auto-skill\n", "  - local:fixture:*\n");
+
+    const result = await spm("list");
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("own-skill");
+    expect(result.stdout).toMatch(/auto-skill\s+external\s+not managed by spm/);
+
+    const json = JSON.parse((await spm("list", "--json")).stdout) as {
+      external: string[];
+      skills: { name: string }[];
+    };
+    expect(json.external).toEqual(["auto-skill"]);
+    expect(json.skills.map((s) => s.name)).toEqual(["own-skill"]);
+  });
+
+  it("add: refuses an external name and leaves the manifest untouched", async () => {
+    const repo = setupExternal();
+    writeExternalManifest(repo, "  - auto-skill\n", "  - local:fixture:*\n");
+    const before = readManifest(project);
+
+    const result = await spm("add", "local:fixture:auto-skill");
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('skill "auto-skill" is declared external');
+    expect(readManifest(project)).toBe(before);
+  });
+
+  it("add: refuses a bare name the exclusion owns before looking at any repository", async () => {
+    const repo = setupExternal();
+    writeExternalManifest(repo, "  - auto-skill\n", "  - local:fixture:*\n");
+
+    const result = await spm("add", "auto-skill");
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("is declared external");
+    expect(result.stderr).toContain("skills.yaml");
+  });
+
+  it("install: links only the skills spm owns", async () => {
+    const repo = setupExternal();
+    writeExternalManifest(repo, "  - auto-skill\n", "  - local:fixture:*\n");
+
+    const result = await spm("i");
+
+    expect(result.code).toBe(0);
+    expect(entries(installDir())).toEqual(["own-skill"]);
+  });
+
+  it("doctor: an external skill that is gone is a warning, and its presence is healthy", async () => {
+    const repo = setupExternal();
+    writeExternalManifest(repo, "  - auto-skill\n", "  - local:fixture:*\n");
+    expect((await spm("i")).code).toBe(0);
+
+    const missing = await spm("doctor");
+    expect(missing.code).toBe(0);
+    expect(missing.stdout).toContain("0 errors, 1 warning");
+    expect(missing.stdout).toContain('external skill "auto-skill" is missing');
+
+    fs.mkdirSync(path.join(installDir(), "auto-skill"));
+    const healthy = await spm("doctor");
+    expect(healthy.code).toBe(0);
+    expect(healthy.stdout).toContain("healthy");
+    expect(healthy.stdout).toContain("1 external");
+  });
+
+  it("preserves an existing cache link after its name becomes external across install and checks", async () => {
+    const repo = setupExternal();
+    writeManifest(
+      project,
+      `installDirs:\n  - .agents/skills\nrepositories:\n  fixture:\n    type: local\n    path: "${repo}"\nskills:\n  - local:fixture:*\n`,
+    );
+    expect((await spm("i")).code).toBe(0);
+    const linkPath = path.join(installDir(), "auto-skill");
+    const target = fs.readlinkSync(linkPath);
+    writeExternalManifest(repo, "  - auto-skill\n", "  - local:fixture:*\n");
+
+    const doctor = await spm("doctor");
+    expect(doctor.code).toBe(0);
+    expect(doctor.stdout).toContain("healthy");
+
+    const frozen = await spm("i", "--frozen");
+    expect(frozen.code).toBe(0);
+    expect(frozen.stdout).toContain("everything is in sync");
+
+    const listed = await spm("list");
+    expect(listed.code).toBe(0);
+    expect(listed.stderr).toBe("");
+    expect(listed.stdout).toMatch(/auto-skill\s+external\s+not managed by spm/);
+
+    for (const args of [["doctor", "--fix"], ["i"], ["i", "--force"]]) {
+      expect((await spm(...args)).code).toBe(0);
+      expect(fs.readlinkSync(linkPath)).toBe(target);
+      expect(entries(installDir())).toEqual(["auto-skill", "own-skill"]);
+    }
+  });
+
+  it("doctor and install: a name declared twice is an error", async () => {
+    const repo = setupExternal();
+    writeExternalManifest(repo, "  - auto-skill\n", "  - local:fixture:auto-skill\n");
+
+    const doctor = await spm("doctor");
+    expect(doctor.code).toBe(1);
+    expect(doctor.stderr).toContain("is declared external");
+
+    const install = await spm("i");
+    expect(install.code).toBe(1);
+    expect(install.stderr).toContain("cannot install it");
+  });
+
+  it("remove: says an external name is out of spm's hands", async () => {
+    const repo = setupExternal();
+    writeExternalManifest(repo, "  - auto-skill\n", "  - local:fixture:*\n");
+
+    const result = await spm("rm", "auto-skill");
+
+    expect(result.code).toBe(0);
+    expect(result.stderr).toContain("is declared external, so spm does not manage it");
+  });
+});

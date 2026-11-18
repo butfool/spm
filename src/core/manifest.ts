@@ -16,6 +16,7 @@ import {
   validRepositoryName,
   type Coordinate,
 } from "./coordinate.js";
+import { validSkillName } from "./discover.js";
 
 /** Manifest filename, both for projects and for the global scope. */
 export const MANIFEST_FILENAME = "skills.yaml";
@@ -60,6 +61,15 @@ export const ManifestSchema = z.strictObject({
    * naming a whole repository is `repositories:`'s job.
    */
   aliases: z.record(z.string(), z.string().min(1)).default({}),
+  /**
+   * Skills another tool installs into the same directories.
+   *
+   * spm neither creates nor removes entries under these names: the list is a
+   * statement about who owns the name, so that a directory such as
+   * `.agents/skills` can be shared with clients that bring their own skills.
+   * A name here may not also be provided by `skills:`.
+   */
+  external: z.array(z.string().min(1)).default([]),
   /** The declared skills, each a `<type>:<repository>:<skill>` coordinate. */
   skills: z.array(z.string().min(1)).default([]),
 });
@@ -101,8 +111,27 @@ export function readManifest(dir: string): Manifest | null {
 
   checkRepositories(file, result.data);
   checkAliases(file, result.data);
+  checkExternal(file, result.data);
   checkCoordinates(file, result.data);
   return result.data;
+}
+
+/** The names a manifest declares as another tool's, as the errors name them. */
+export interface ExternalSkills {
+  names: ReadonlySet<string>;
+  /** The manifest that declares the list, for messages. */
+  manifestFile: string;
+}
+
+/**
+ * The exclusion set of a manifest, together with where it came from.
+ *
+ * The file travels with the set because every refusal this set causes has to
+ * tell the user which `skills.yaml` to edit, and a bare "skills.yaml" is not
+ * enough once both scopes can carry the list.
+ */
+export function externalSkills(manifest: Manifest, manifestDir: string): ExternalSkills {
+  return { names: new Set(manifest.external), manifestFile: manifestPath(manifestDir) };
 }
 
 /**
@@ -156,6 +185,21 @@ function checkAliases(file: string, manifest: Manifest): void {
         "An alias names one skill. Register a repository to name a directory of them.",
       );
     }
+  }
+}
+
+/**
+ * An external name becomes a path segment under every install directory, so it
+ * follows the same rules as a skill name. A name that could leave the
+ * directory is refused here, before any command gets to build a path from it.
+ */
+function checkExternal(file: string, manifest: Manifest): void {
+  for (const name of manifest.external) {
+    if (validSkillName(name)) continue;
+    throw new SpmError(
+      `${file} declares the unusable external skill name "${name}"`,
+      "External names follow the same rules as skill names: lowercase letters, digits, dots, dashes and underscores, and no leading dot.",
+    );
   }
 }
 
@@ -230,6 +274,11 @@ export function writeManifest(dir: string, manifest: Manifest): void {
       aliases[name] = manifest.aliases[name]!;
     }
     out["aliases"] = aliases;
+  }
+
+  const external = [...new Set(manifest.external)].sort((a, b) => a.localeCompare(b));
+  if (external.length > 0) {
+    out["external"] = external;
   }
 
   if (manifest.skills.length > 0) {

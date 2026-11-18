@@ -81,7 +81,7 @@ export function installSkills(
 
   const removed = opts.prune === false
     ? []
-    : pruneOrphans(installDirs, targets);
+    : pruneOrphans(installDirs, targets, new Set(manifest.external));
 
   if (scope.kind === "project") registerProjectManifest(scope.manifestDir);
 
@@ -155,7 +155,7 @@ export function ownedLinkTarget(linkPath: string): string | null {
 
 /**
  * Removes links in each install directory that spm made but this manifest no
- * longer declares.
+ * longer declares, preserving every name the manifest hands to another tool.
  *
  * What counts as one of spm's links is `ownedLinkTarget`'s question, and the
  * answer is "its target lives in the source cache". A link the user made by
@@ -165,6 +165,7 @@ export function ownedLinkTarget(linkPath: string): string | null {
 export function pruneOrphans(
   installDirs: string[],
   targets: SkillTarget[],
+  external: ReadonlySet<string>,
 ): { skillName: string; linkPath: string }[] {
   const desired = new Set(targets.map((t) => t.name));
   const removed: { skillName: string; linkPath: string }[] = [];
@@ -174,7 +175,7 @@ export function pruneOrphans(
 
     for (const name of fs.readdirSync(dir)) {
       if (name.startsWith(".")) continue;
-      if (desired.has(name)) continue;
+      if (desired.has(name) || external.has(name)) continue;
 
       const linkPath = path.join(dir, name);
       if (ownedLinkTarget(linkPath) === null) continue;
@@ -199,6 +200,7 @@ export function uninstallSkills(
   for (const dir of installDirs) {
     if (!isDirectory(dir)) continue;
     for (const name of skillNames) {
+      if (manifest.external.includes(name)) continue;
       const linkPath = path.join(dir, name);
       if (ownedLinkTarget(linkPath) === null) continue;
       fs.unlinkSync(linkPath);

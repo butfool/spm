@@ -7,6 +7,7 @@ import {
 import { discoverSkills } from "../../core/discover.js";
 import { installDirsFor, installSkills } from "../../core/install.js";
 import {
+  externalSkills,
   removeSkillEntries,
   writeManifest,
   type Manifest,
@@ -99,6 +100,7 @@ export async function runRemove(
       global: scope.kind === "global",
       register: false,
     }),
+    externalSkills(manifest, scope.manifestDir),
   );
 
   const result = installSkills(targets, manifest, scope, { prune: true });
@@ -159,6 +161,15 @@ function targetFor(spec: string, layers: RepositoryLayers): SpecTarget | null {
 }
 
 function reportMissing(manifest: Manifest, spec: string): void {
+  const name = spec.trim().split(":").pop();
+  if (name !== undefined && manifest.external.includes(name)) {
+    warn(`"${spec}" is declared external, so spm does not manage it`);
+    info(
+      `  ${dim(`Remove it from the external list in skills.yaml to let spm install it.`)}`,
+    );
+    return;
+  }
+
   const covering = findCoveringEntry(manifest, spec);
   if (covering === null) {
     warn(`"${spec}" is not declared in skills.yaml`);
@@ -193,7 +204,7 @@ function findCoveringEntry(manifest: Manifest, spec: string): string | null {
       exclude: repo.exclude,
       maxDepth: repo.maxDepth,
     });
-    if (skills.some((skill) => skill.name === name)) {
+    if (skills.some((skill) => skill.name === name && !manifest.external.includes(name))) {
       return `${coordinate.type}:${coordinate.repository}:*`;
     }
   }

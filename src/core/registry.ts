@@ -216,7 +216,7 @@ export function undeclareAlias(name: string): boolean {
  * next write.
  */
 export function emptyManifest(): Manifest {
-  return { installDirs: [], repositories: {}, aliases: {}, skills: [] };
+  return { installDirs: [], repositories: {}, aliases: {}, external: [], skills: [] };
 }
 
 /** Refuses `aliases:` in a project manifest, which is where it does not belong. */

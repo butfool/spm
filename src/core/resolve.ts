@@ -29,7 +29,7 @@ import {
   type DiscoverOptions,
   type SkippedSkill,
 } from "./discover.js";
-import { manifestPath, type Manifest } from "./manifest.js";
+import { manifestPath, type ExternalSkills, type Manifest } from "./manifest.js";
 import {
   declarationPath,
   globalAliases,
@@ -249,6 +249,7 @@ export async function resolveSpec(
 ): Promise<SourceSelection> {
   const layers = repositoryLayers(ctx.manifest, ctx.manifestDir, ctx.global);
   const target = parseSpecTarget(spec, (name) => isKnownLocal(name, layers));
+  refuseExternalTarget(target, ctx);
 
   switch (target.kind) {
     case "path":
@@ -263,6 +264,34 @@ export async function resolveSpec(
 /** Whether `name` is a local repository this machine can resolve. */
 export function isKnownLocal(name: string, layers: RepositoryLayers): boolean {
   return lookupLocalRepository(name, layers) !== null || describeLocal(name) !== null;
+}
+
+/**
+ * Refuses a specifier that names a skill the manifest has handed to another
+ * tool, before the command starts cloning or registering anything.
+ *
+ * Only names the specifier spells out are checked here. A whole repository and
+ * the two indirections (`path:` and `alias:`) are left to expansion, which is
+ * the layer that knows the skill names behind them.
+ */
+function refuseExternalTarget(target: SpecTarget, ctx: ResolveContext): void {
+  const external = ctx.manifest?.external ?? [];
+  if (external.length === 0) return;
+
+  let name: string | null = null;
+  if (target.kind === "skill") name = target.name;
+  else if (target.kind === "coordinate") {
+    const coordinate = target.coordinate;
+    if (isRepositoryCoordinate(coordinate) && !namesWholeRepository(coordinate)) {
+      name = coordinate.skill;
+    }
+  }
+  if (name === null || !external.includes(name)) return;
+
+  throw new SpmError(
+    `skill "${name}" is declared external, so spm will not install it`,
+    `Remove it from the external list in ${manifestPath(ctx.manifestDir)} to let spm manage it.`,
+  );
 }
 
 async function resolvePathSpec(
@@ -707,8 +736,16 @@ export interface ExpansionResult {
  * the manifest would otherwise gain an entry that provides nothing. A
  * selection that does resolve returns the files it skipped, and the caller
  * decides how to report them.
+ *
+ * `external` is the manifest's own exclusion set, so expansion is where the
+ * two kinds of declaration meet: a whole repository loses the members another
+ * tool owns, while a declaration naming one of them outright is a
+ * self-contradictory manifest and is refused.
  */
-export function expandSelections(selections: SourceSelection[]): ExpansionResult {
+export function expandSelections(
+  selections: SourceSelection[],
+  external: ExternalSkills,
+): ExpansionResult {
   const targets: SkillTarget[] = [];
   const skipped: SkippedSkill[] = [];
   const seenSkipped = new Set<string>();
@@ -745,19 +782,34 @@ export function expandSelections(selections: SourceSelection[]): ExpansionResult
 
     let chosen: DiscoveredSkill[];
     if (selection.skills === "*") {
-      chosen = available;
+      chosen = available.filter((skill) => !external.names.has(skill.name));
       if (chosen.length === 0) {
-        throw new SkillResolutionError(
-          `${selection.label} contains no usable skills`,
-          skippedLines.length > 0
-            ? ["Every SKILL.md under it was skipped:", ...skippedLines].join("\n  ")
-            : `Nothing with a SKILL.md was found under ${selection.root}.`,
-          skipped,
+        const owned = available.filter((skill) => external.names.has(skill.name));
+        if (owned.length === 0) {
+          throw new SkillResolutionError(
+            `${selection.label} contains no usable skills`,
+            skippedLines.length > 0
+              ? ["Every SKILL.md under it was skipped:", ...skippedLines].join("\n  ")
+              : `Nothing with a SKILL.md was found under ${selection.root}.`,
+            skipped,
+          );
+        }
+        throw new SpmError(
+          `${selection.label} only provides external skills: ${owned
+            .map((skill) => skill.name)
+            .join(", ")}`,
+          `Remove one of them from the external list in ${external.manifestFile}, or declare the skills you want individually.`,
         );
       }
     } else {
       chosen = [];
       for (const wanted of selection.skills) {
+        if (external.names.has(wanted)) {
+          throw new SpmError(
+            `skill "${wanted}" is declared external, so ${selection.label} cannot install it`,
+            `Remove it from the external list in ${external.manifestFile}, or drop the declaration that names it.`,
+          );
+        }
         const found = available.find((skill) => skill.name === wanted);
         if (!found) {
           const hints = [

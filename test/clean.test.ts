@@ -167,6 +167,7 @@ function manifest(overrides: Partial<Manifest> = {}): Manifest {
     installDirs: [],
     repositories: {},
     aliases: {},
+    external: [],
     skills: [],
     ...overrides,
   };

@@ -139,6 +139,9 @@ installDirs:
   - .agents/skills
   - .claude/skills
 
+external:
+  - codex-reviewer
+
 skills:
   - github:vercel-labs/agent-skills:vercel-react-best-practices
   - local:Obsidian:obsidian-tasks
@@ -147,6 +150,18 @@ skills:
 
 Every declared skill is linked into every `installDirs` entry. Relative paths
 resolve from the directory containing `skills.yaml`.
+
+`external:` hands names to the other tools that share the install directories.
+spm preserves every existing directory, file, and symlink on these names,
+including links into its source cache. Installation, pruning, frozen checks,
+and doctor repairs leave these entries alone. A whole-repository declaration
+installs every member except the external ones. Declaring the same name in
+`skills:` as well is refused, because the manifest would be saying two
+opposite things at once.
+
+The list is per manifest: a project's `external:` covers that project's install
+directories, and the global manifest's covers the global install. It is written
+by hand, like the rest of the file.
 
 An install directory must stay inside the directory containing `skills.yaml`;
 for the global manifest, inside your home directory. A manifest that points
@@ -286,6 +301,19 @@ discovery inside that repository.
 - incorrect symlinks at declared skill paths are repointed;
 - undeclared managed symlinks are removed;
 - real files and directories are preserved unless `--force` is provided.
+
+Ownership decides what counts as a managed link: a symlink whose target lives
+in the source cache is spm's, and everything else belongs to whoever made it.
+The same rule keeps `external:` names safe. A directory or symlink another
+tool placed there is left alone, while a link spm itself created on such a name
+is removed, because the manifest says the name is no longer spm's. `spm list`
+prints those names with an `external` marker, and `spm install --frozen` treats
+such a leftover link as out of date.
+
+`spm doctor` reports two things about external names: one that is missing from
+every install directory is a warning, since the tool that used to install it
+may have gone; a link spm created on one of those names is an error until the
+next `spm i` removes it.
 
 Install directories are confined to the manifest's own tree, and `--force`
 never lifts that confinement: it decides whether a blocking entry may be

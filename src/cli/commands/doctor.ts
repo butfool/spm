@@ -22,7 +22,8 @@ export function registerDoctorCommand(program: Command): void {
         success(
           `healthy — ${report.targets.length} skill${
             report.targets.length === 1 ? "" : "s"
-          } across ${report.installDirs.length} install dir${report.installDirs.length === 1 ? "" : "s"}`,
+          } across ${report.installDirs.length} install dir${report.installDirs.length === 1 ? "" : "s"}` +
+            (report.external.length > 0 ? `, ${report.external.length} external` : ""),
         );
         return;
       }

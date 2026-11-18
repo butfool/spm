@@ -3,6 +3,7 @@ import { parseCoordinate } from "../../core/coordinate.js";
 import { installDirsFor, installSkills } from "../../core/install.js";
 import {
   addSkillEntry,
+  externalSkills,
   upsertRepository,
   writeManifest,
   type Manifest,
@@ -81,6 +82,7 @@ export async function runAdd(
       register: true,
       force: opts.force ?? false,
     }),
+    externalSkills(staged, scope.manifestDir),
   );
 
   // Past this point nothing can fail on the manifest's own account, so it is
